@@ -189,6 +189,14 @@ flowchart TD
     Cleanup --> R3[重置context-collapse]
 ```
 
+**压缩后恢复机制**：Autocompact 可能让模型"忘记"刚编辑的文件。系统会在压缩后自动执行 `runPostCompactCleanup()`：
+
+1. **恢复最近 5 个文件**：每个文件限 5K Token，确保模型记得刚操作的文件
+2. **恢复所有已激活的技能**：预算 25K Token，确保已加载的 [技能](./11-memory-skills.md) 不丢失
+3. **重置 Context Collapse**：清除折叠状态，为下一轮压缩准备
+
+这个恢复机制是 Claude Code 能在超长对话中保持连贯性的关键。
+
 **熔断器机制**：连续 3 次 autocompact 失败（`MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES`），停止重试。
 
 ## 3.5 Token 预算管理

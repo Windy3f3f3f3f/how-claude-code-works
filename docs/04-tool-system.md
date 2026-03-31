@@ -223,17 +223,52 @@ AgentTool 负责派生子 Agent，是多 Agent 架构的核心：
 
 ## 4.9 MCP 工具集成
 
-MCP（Model Context Protocol）工具通过桥接层无缝集成到 Claude Code 的工具系统中：
+MCP（Model Context Protocol）工具通过桥接层无缝集成到 Claude Code 的工具系统中。
+
+### 桥接工具
 
 | Claude Code 工具 | MCP 功能 |
 |-----------------|---------|
 | MCPTool | 调用单个 MCP 工具 |
 | ListMcpResourcesTool | 列出 MCP 资源 |
 | ReadMcpResourceTool | 读取 MCP 资源内容 |
+| createMcpAuthTool() | OAuth 认证处理 |
 
-MCP 服务端支持 7 种传输机制：stdio、SSE、HTTP、WebSocket、SDK 原生、IDE SSE、Claude.ai 代理。
+### 7 种传输机制
 
-配置示例：
+```typescript
+type McpTransport =
+  | 'stdio'          // 标准输入/输出（子进程 MCP 服务端）
+  | 'sse'            // Server-Sent Events（HTTP 流式）
+  | 'sse-ide'        // SSE 变体（IDE 扩展）
+  | 'http'           // HTTP 传输（StreamableHTTPClientTransport）
+  | 'ws'             // WebSocket（双向实时）
+  | 'sdk'            // SDK 原生传输（进程内，SdkControlTransport）
+  | 'claudeai-proxy' // Claude.ai 代理服务端
+```
+
+### 连接状态机
+
+```mermaid
+stateDiagram-v2
+    [*] --> Pending
+    Pending --> Connected: 连接成功
+    Pending --> Failed: 连接失败
+    Connected --> NeedsAuth: OAuth 需要
+    NeedsAuth --> Connected: 认证完成
+    [*] --> Disabled: 用户禁用
+```
+
+客户端实例被 memoized，避免重复初始化。HTTP 404 + JSON-RPC -32001 检测会话过期。
+
+### OAuth 支持
+
+MCP 集成支持三阶段 OAuth：
+1. **标准 OAuth 2.0 + PKCE**：自动 Token 轮换，30 秒超时
+2. **跨应用访问（XAA）via OIDC**：企业 IdP 集成，一次登录多个 MCP 服务端
+3. **Token 验证**：主动刷新接近过期的 Token，macOS Keychain 缓存
+
+### 配置与作用域
 
 ```json
 {
@@ -249,7 +284,9 @@ MCP 服务端支持 7 种传输机制：stdio、SSE、HTTP、WebSocket、SDK 原
 }
 ```
 
-MCP 工具在 `assembleToolPool()` 阶段与内置工具合并，经过去重处理后统一注册。
+MCP 服务端配置支持 7 种作用域：local / user / project / dynamic / enterprise / claudeai / managed。
+
+MCP 工具在 `assembleToolPool()` 阶段与内置工具合并，经过去重处理后统一注册。大输出（二进制 blob > 25KB）自动保存到 `.claude/mcp-outputs/`。
 
 ## 4.10 工具搜索与延迟加载
 

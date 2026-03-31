@@ -4,7 +4,7 @@
 
 [English](./README_EN.md)
 
-**不是读代码笔记，是架构抽象。** 本项目从 Claude Code 的 50 万+ 行 TypeScript 源码中，提炼出 8 篇专题文档 + 架构图，帮你用最短路径理解这个生产级编程 Agent 的设计精髓。
+**不是读代码笔记，是架构抽象。** 本项目从 Claude Code 的 50 万+ 行 TypeScript 源码中，提炼出 11 篇专题文档 + 架构图，帮你用最短路径理解这个生产级编程 Agent 的设计精髓。
 
 ## 从源码中发现的关键设计洞察
 
@@ -83,6 +83,9 @@ graph TB
 | 6 | [权限与安全](./docs/06-permission-security.md) | 5 层纵深防御、Bash AST 分析、注入防护 | 安全、权限 |
 | 7 | [用户体验设计](./docs/07-user-experience.md) | Ink/React TUI、流式输出、Vim 模式 | UX、终端 |
 | 8 | [最小必要组件](./docs/08-minimal-components.md) | 构建 coding agent 的最小组件集、渐进增强路线 | 复刻、学习 |
+| 9 | [Hooks 与可扩展性](./docs/09-hooks-extensibility.md) | 23+ Hook 事件、5 种 Hook 类型、PermissionRequest 深度解析 | Hooks、定制 |
+| 10 | [多 Agent 架构](./docs/10-multi-agent.md) | 子 Agent、协调器模式、Swarm 团队 | 多 Agent |
+| 11 | [记忆与技能系统](./docs/11-memory-skills.md) | 4 种记忆类型、18+ 内置技能、跨会话学习 | 记忆、技能 |
 
 ## 关键数据
 
@@ -110,6 +113,9 @@ graph TB
 
 **如果你关注安全：**
 → 读 [权限与安全](./docs/06-permission-security.md) + [代码编辑策略](./docs/05-code-editing-strategy.md)
+
+**如果你想定制 Claude Code：**
+→ 读 [Hooks 与可扩展性](./docs/09-hooks-extensibility.md) + [记忆与技能系统](./docs/11-memory-skills.md)
 
 ## 相关项目
 

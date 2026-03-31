@@ -121,7 +121,34 @@ src/
     └── swarm/               # Swarm 多 Agent 后端
 ```
 
-## 1.5 架构总览
+## 1.5 启动流程
+
+Claude Code 的启动经过精心优化，将大量工作并行化和延迟化。整个流程分为 9 个阶段，关键路径仅约 **235ms**：
+
+```mermaid
+flowchart TD
+    P1[Phase 1: 模块求值 ~0ms<br/>快速路径: --version / MCP / Bridge] --> P2[Phase 2: 模块加载 ~135ms<br/>并行: MDM读取 + Keychain预取<br/>加载: Commander/analytics/auth]
+    P2 --> P3[Phase 3: CLI 解析 ~10ms<br/>检测运行模式<br/>急加载 settings]
+    P3 --> P4[Phase 4: Commander 设置 ~5ms]
+    P4 --> P5[Phase 5: preAction ~100ms<br/>await MDM + Keychain<br/>await init 核心初始化<br/>配置迁移]
+    P5 --> P6[Phase 6: init 14步 ~100-200ms<br/>配置验证/TLS/优雅关闭<br/>OAuth刷新/网络配置/API预连接<br/>全部幂等 memoized]
+    P6 --> P7[Phase 7: Action Handler<br/>提取选项 → 验证模型 → 启动REPL]
+    P7 --> P8[Phase 8: 延迟预取 首帧后<br/>用户信息/文件计数/模型能力<br/>不阻塞首次渲染]
+    P8 --> P9[Phase 9: 遥测 Trust Dialog后<br/>懒加载 OpenTelemetry ~400KB+]
+
+    style P1 fill:#e8f5e9
+    style P2 fill:#e8f5e9
+    style P5 fill:#fff3e0
+    style P6 fill:#fff3e0
+```
+
+关键优化策略：
+- **并行预取**：MDM 读取和 Keychain 预取在模块加载时就并行启动
+- **延迟非关键任务**：用户信息、文件计数、模型能力检测推迟到首帧渲染之后
+- **幂等初始化**：`init()` 是 memoized 的，重复调用无副作用
+- **懒加载重依赖**：OpenTelemetry（~400KB+）在 Trust Dialog 之后才加载
+
+## 1.6 架构总览
 
 ```mermaid
 graph TB
@@ -160,7 +187,7 @@ graph TB
     end
 ```
 
-## 1.6 代码规模参考
+## 1.7 代码规模参考
 
 | 指标 | 数值 |
 |------|------|

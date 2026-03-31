@@ -4,7 +4,7 @@
 
 [中文](./README.md)
 
-**Not reading notes — architectural abstractions.** This project distills 8 topic-specific documents + architecture diagrams from Claude Code's 500K+ lines of TypeScript source code, giving you the shortest path to understanding this production-grade coding agent.
+**Not reading notes — architectural abstractions.** This project distills 11 topic-specific documents + architecture diagrams from Claude Code's 500K+ lines of TypeScript source code, giving you the shortest path to understanding this production-grade coding agent.
 
 ## Key Design Insights from Source Code
 
@@ -32,6 +32,35 @@
 - **Fast startup via 9-phase parallel initialization** — MDM read and keychain prefetch start during module loading; non-critical tasks defer until after first render. Critical path: ~235ms
 - **API 529 retry distinguishes foreground vs background** — user-facing ops retry, background tasks (summaries, predictions) give up immediately to avoid amplifying gateway load
 
+## System Architecture
+
+```mermaid
+graph TB
+    User[User Input] --> QE[QueryEngine Session Manager]
+    QE --> Query[query Main Loop]
+    Query --> API[Claude API Call]
+    API --> Parse{Parse Response}
+    Parse -->|Text| Output[Streaming Output]
+    Parse -->|Tool Call| Tools[Tool Execution Engine]
+    Tools --> ReadTool[File Read]
+    Tools --> EditTool[File Edit]
+    Tools --> ShellTool[Shell Exec]
+    Tools --> SearchTool[Search Tools]
+    Tools --> MCPTool[MCP Tools]
+    Tools -->|Results| Query
+
+    Context[Context Engineering] --> Query
+    Context --> SysPrompt[System Prompt]
+    Context --> GitStatus[Git Status]
+    Context --> ClaudeMD[CLAUDE.md]
+    Context --> Compact[Compression Pipeline]
+
+    Perm[Permission System] --> Tools
+    Perm --> Rules[Rule Layer]
+    Perm --> AST[Bash AST Analysis]
+    Perm --> Confirm[User Confirmation]
+```
+
 ## Documentation
 
 ### Quick Start
@@ -39,16 +68,19 @@
 
 ### Deep Dives
 
-| # | Document | Content |
-|---|----------|---------|
-| 1 | [Overview](./docs/01-overview.md) | Problem, tech stack, design principles |
-| 2 | [Agent Loop](./docs/02-agent-loop.md) | The core loop implementation (most important chapter) |
-| 3 | [Context Engineering](./docs/03-context-engineering.md) | Context building, 4-level compression pipeline |
-| 4 | [Tool System](./docs/04-tool-system.md) | 66+ tools, execution pipeline, concurrency |
-| 5 | [Code Editing Strategy](./docs/05-code-editing-strategy.md) | Search-replace vs full rewrite philosophy |
-| 6 | [Permission & Security](./docs/06-permission-security.md) | 5-layer defense, Bash AST analysis |
-| 7 | [User Experience](./docs/07-user-experience.md) | Ink/React TUI, streaming, Vim mode |
-| 8 | [Minimal Components](./docs/08-minimal-components.md) | Minimum viable coding agent components |
+| # | Document | Content | Keywords |
+|---|----------|---------|----------|
+| 1 | [Overview](./docs/01-overview.md) | Problem, tech stack, design principles, directory structure | Architecture |
+| 2 | [Agent Loop](./docs/02-agent-loop.md) | The core loop: dual-layer generators, streaming, stop conditions | **Most Important** |
+| 3 | [Context Engineering](./docs/03-context-engineering.md) | Context building, 4-level compression pipeline, token budget | Compression, Prompt |
+| 4 | [Tool System](./docs/04-tool-system.md) | 66+ tools, execution pipeline, concurrency, MCP integration | Tools, Extension |
+| 5 | [Code Editing Strategy](./docs/05-code-editing-strategy.md) | Search-replace vs full rewrite, low-destructiveness philosophy | Editing, Safety |
+| 6 | [Permission & Security](./docs/06-permission-security.md) | 5-layer defense, Bash AST analysis, injection prevention | Security, Permission |
+| 7 | [User Experience](./docs/07-user-experience.md) | Ink/React TUI, streaming output, Vim mode | UX, Terminal |
+| 8 | [Minimal Components](./docs/08-minimal-components.md) | Minimum viable coding agent, progressive enhancement | Build Your Own |
+| 9 | [Hooks & Extensibility](./docs/09-hooks-extensibility.md) | 23+ hook events, 5 hook types, PermissionRequest deep dive | Hooks, Customization |
+| 10 | [Multi-Agent Architecture](./docs/10-multi-agent.md) | Sub-agents, Coordinator mode, Swarm teams | Multi-Agent |
+| 11 | [Memory & Skills](./docs/11-memory-skills.md) | 4 memory types, 18+ built-in skills, cross-session learning | Memory, Skills |
 
 ## Key Stats
 
@@ -58,12 +90,35 @@
 | TypeScript files | 1,884 |
 | Built-in tools | 66+ |
 | Hook event types | 23+ |
+| Built-in skills | 18+ |
 | Permission layers | 5 |
 | Compression levels | 4 |
+| Startup phases | 9 |
+
+## Reading Recommendations
+
+**If you have 10 minutes:**
+→ Read [Quick Start](./docs/quick-start.md)
+
+**If you want to understand core principles:**
+→ Read in order: [Agent Loop](./docs/02-agent-loop.md) → [Context Engineering](./docs/03-context-engineering.md) → [Tool System](./docs/04-tool-system.md)
+
+**If you want to build your own:**
+→ Read [Minimal Components](./docs/08-minimal-components.md), then check out [claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch)
+
+**If you care about security:**
+→ Read [Permission & Security](./docs/06-permission-security.md) + [Code Editing Strategy](./docs/05-code-editing-strategy.md)
+
+**If you want to customize Claude Code:**
+→ Read [Hooks & Extensibility](./docs/09-hooks-extensibility.md) + [Memory & Skills](./docs/11-memory-skills.md)
 
 ## Related Projects
 
 - **[claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch)** — A minimal implementation & tutorial of Claude Code's core features, built from scratch
+
+## Contributing
+
+Issues and PRs welcome! If you find an error in the analysis or have a better perspective, we'd love to discuss.
 
 ## License
 

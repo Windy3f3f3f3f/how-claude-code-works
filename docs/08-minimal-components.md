@@ -254,4 +254,4 @@ graph LR
 
 ---
 
-上一章：[用户体验设计](./07-user-experience.md) | 下一章：[快速入门](./quick-start.md)
+上一章：[用户体验设计](./07-user-experience.md) | 下一章：[Hooks 与可扩展性](./09-hooks-extensibility.md)
