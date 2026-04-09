@@ -967,7 +967,69 @@ During normal operation, autocompact should proactively trigger when context uti
 >
 > `CAPPED_DEFAULT_MAX_TOKENS = 8,000` (`src/utils/context.ts`). The source code comment explains the reason: *"BQ p99 output = 4,911 tokens, so 32k/64k defaults over-reserve 8-16× slot capacity."* The API server reserves computational resources (slots) based on `max_output_tokens`; if every request declares 32K but actually only uses 5K, the server's resource utilization is extremely low. 8K as the default covers 99% of actual needs. When the model is actually truncated due to `max_tokens`, the system automatically upgrades to `ESCALATED_MAX_TOKENS = 64,000` and cleanly retries — this is the MOT (Max Output Tokens) recovery mechanism.
 
-## 3.10 Design Insights
+## 3.10 Practical Guide: How to Maximize KV Cache Efficiency
+
+Now that we understand Claude Code's prefix caching architecture, we can think in reverse: as a user, which habits maximize cache hit rates (faster responses, lower costs), and which operations inadvertently "shatter" the cache?
+
+### Cache-Friendly Habits
+
+**1. Keep conversations continuous — avoid long idle periods**
+
+The cache TTL for regular users is **5 minutes** (1 hour for paid subscribers). If you step away for more than 5 minutes and then send a message, the server's KV Cache has already expired — the entire prefix (system + tools + all message history) must be recomputed from scratch. You'll noticeably feel the first response being slower.
+
+> Practical tip: If you need to step away briefly, try to return within 5 minutes. If you expect to be away longer, accept that the first turn back will be slower — this is normal TTL expiration behavior, and subsequent turns will immediately return to normal speed.
+
+**2. Long sessions are better than frequent new sessions**
+
+Every new session is a **full cold start** — 50-100K tokens of system prompt and tool definitions need to be processed from scratch. In contrast, continuing within the same session means all of that prefix is already cached, and each turn only needs to process new messages.
+
+> Practical tip: Try to complete related work within the same session rather than opening a new one for every small task. If you have multiple Claude Code sessions running simultaneously, their message history caches are independent — they cannot share message-level KV Cache (though system prompt caching can be shared across sessions).
+
+**3. Let automatic compression manage your context**
+
+Claude Code has a built-in five-level compression pipeline that automatically triggers as the context approaches the window limit. You don't need to manually intervene — the system knows the optimal timing and strategy.
+
+> Practical tip: Don't panic when you see context utilization warnings — let the system handle it automatically. Only use `/compact` manually when you explicitly want to "start a new logical thread" in the conversation.
+
+**4. Keep MCP tool installations minimal**
+
+This is something many users don't realize: **as soon as you have any MCP tool installed**, the entire system prompt cache degrades from `global` (shared worldwide) to `org` (shared within organization). This means you can't benefit from the system prompt cache shared by millions of users worldwide — every cold start requires independent computation.
+
+> Practical tip: Only install MCP servers you're actively using. If an MCP server is only needed occasionally, consider removing it when done. Fewer MCP tools = better cache efficiency.
+
+### Operations That Break the Cache
+
+**`/clear` — The Heaviest Cache Cost**
+
+`/clear` doesn't just clear conversation history — it also **resets all cache-related latch states** (beta header latches, TTL eligibility latches, section caches, etc.). The next request after `/clear` will always be a complete cache cold start.
+
+> When to use: When you want to completely switch to a different task, or when the conversation has gone in the wrong direction and you want a full restart. Don't use `/clear` as routine "cleanup."
+
+**`/compact` — Necessary But Costly**
+
+`/compact` manually triggers full compression, compressing message history into a summary while also resetting latch states. The post-compression message prefix is completely different from pre-compression, so message-level cache is fully invalidated and needs to be rebuilt.
+
+> When to use: When you feel the model has "forgotten" previous context, or when you want to manually free up space. But in most cases, automatic compression (autocompact) makes better timing decisions — it triggers at around 83%-90% context utilization, maintaining sufficient buffer.
+
+**Frequently switching models**
+
+Different models use separate KV Cache spaces on the server. If you frequently switch models within the same session (e.g., from Opus to Sonnet and back), each switch will miss the previous model's cache.
+
+> Practical tip: Stick to one model within a session. If you need to switch, consider opening a new session.
+
+### Mental Model for Cache Efficiency
+
+Finally, a simple mental model to summarize:
+
+```
+Your request = [cached prefix] + [new content]
+                ~~~~~~~~~~~~~~   ~~~~~~~~~~~~~~
+                free (existing KV Cache)   needs computation (costs time & money)
+```
+
+Your goal is to maximize the "cached prefix" portion. The core principle: **maintain stability** — keep sessions continuous, avoid unnecessary resets, minimize operations that change the prefix. The more stable the prefix, the higher the cache hit rate, the faster the response, and the lower the cost.
+
+## 3.11 Design Insights
 
 1. **Memoize guarantees idempotency**: Both `getSystemContext` and `getUserContext` are memoized, computed only once per session. When `setSystemPromptInjection()` changes, both functions' caches are manually cleared
 2. **Progressiveness of the compression pipeline**: From zero-cost trimming to full summarization, upgrading level by level as needed. Most conversations never trigger Autocompact
