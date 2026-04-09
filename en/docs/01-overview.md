@@ -1,5 +1,7 @@
 # Chapter 1: Claude Code Overview
 
+> **Chapter Roadmap**: This chapter introduces Claude Code's positioning, technology stack, and architectural overview from a macro perspective. We first understand its essential difference from traditional programming tools as an Agent (1.1), then cover technology choices (1.2), 6 core design principles (1.3), key terminology (1.3+), source directory structure (1.4), and finally tie everything together through the data flow panorama (1.5), startup process (1.6), and architecture overview (1.7). If you just want a quick overview, jump directly to 1.5 Data Flow Panorama.
+
 ## 1.1 What Problem Does Claude Code Solve
 
 Claude Code is not a simple "CLI calling a large model" tool. It is the official **Controlled Tool-Loop Agent** released by Anthropic, designed specifically for real-world software engineering tasks.
@@ -49,7 +51,7 @@ This loop **only exits when the model's response does not contain any tool calls
 |-------|------------------|-------------|
 | Runtime | Bun | High-performance JS/TS runtime, supports compile-time Feature Flag elimination |
 | Language | TypeScript | Full TypeScript, strict type checking |
-| UI Framework | React + Ink (in-house) | React-based terminal UI framework, in-house Ink renderer (`src/ink/`, 251KB) |
+| UI Framework | React + Ink (in-house) | React-based terminal UI framework, in-house Ink renderer (`src/ink/`, ~1.0MB) |
 | Layout Engine | Yoga | Facebook's Flexbox layout engine, adapted for terminal |
 | Schema Validation | Zod | Runtime type validation, used for tool input, Hook output, configuration validation |
 | CLI Framework | Commander.js | Command-line argument parsing, dispatching to REPL/headless/SDK modes |
@@ -58,7 +60,7 @@ This loop **only exits when the model's response does not contain any tool calls
 The technology choices themselves are not the focus of this article, but two choices are worth mentioning because they profoundly influence the architectural design:
 
 - **Bun's `feature()` macro**: Claude Code internally has a large number of features (coordinator mode, Swarm teams, etc.) that need to be completely removed in external release versions. The compile-time Feature Flags provided by Bun allow this code to be physically removed at build time, rather than hidden at runtime. This will be expanded upon in the "Compile-time Feature Gate" design principle section later.
-- **In-house React terminal renderer**: The terminal UI complexity of Claude Code far exceeds that of a typical CLI -- permission confirmation dialogs, streaming code highlighting, nested tool progress indicators all require componentized state management. The team maintains a 251KB custom Ink renderer (rather than using the upstream library), see [Chapter 12: User Experience Design](/en/docs/12-user-experience.md) for details.
+- **In-house React terminal renderer**: The terminal UI complexity of Claude Code far exceeds that of a typical CLI -- permission confirmation dialogs, streaming code highlighting, nested tool progress indicators all require componentized state management. The team maintains a ~1.0MB custom Ink renderer (rather than using the upstream library), see [Chapter 12: User Experience Design](/en/docs/12-user-experience.md) for details.
 
 ## 1.3 Core Design Principles
 
@@ -126,18 +128,24 @@ Compile-time dead code elimination is achieved through Bun bundler's `feature()`
 This pattern appears repeatedly throughout the codebase:
 
 ```typescript
-// Top of src/query.ts — 4 Feature Gates
+// Top of src/query.ts — 6 Feature Gates with conditional loading
 const reactiveCompact = feature('REACTIVE_COMPACT')
   ? (require('./services/compact/reactiveCompact.js') as typeof import('./services/compact/reactiveCompact.js'))
   : null
 const contextCollapse = feature('CONTEXT_COLLAPSE')
   ? (require('./services/contextCollapse/index.js') as typeof import('./services/contextCollapse/index.js'))
   : null
+const skillPrefetch = feature('EXPERIMENTAL_SKILL_SEARCH')
+  ? (require('./services/skillSearch/prefetch.js') as typeof import('./services/skillSearch/prefetch.js'))
+  : null
+const jobClassifier = feature('TEMPLATES')
+  ? (require('./jobs/classifier.js') as typeof import('./jobs/classifier.js'))
+  : null
 const snipModule = feature('HISTORY_SNIP')
   ? (require('./services/compact/snipCompact.js') as typeof import('./services/compact/snipCompact.js'))
   : null
-const skillPrefetch = feature('EXPERIMENTAL_SKILL_SEARCH')
-  ? (require('./services/skillSearch/prefetch.js') as typeof import('./services/skillSearch/prefetch.js'))
+const taskSummaryModule = feature('BG_SESSIONS')
+  ? (require('./utils/taskSummary.js') as typeof import('./utils/taskSummary.js'))
   : null
 ```
 
@@ -185,6 +193,19 @@ The `Tool` interface (`src/Tool.ts`) has approximately 20 fields and methods, ea
 
 The `findToolByName()` function does not distinguish between tool sources -- for the query loop, all tools are equal `Tool` objects. This means an external Kubernetes tool connected via the MCP protocol goes through the exact same permission checking, input validation, and result formatting process as the built-in BashTool. Extending Claude Code's capabilities is simply implementing an object that conforms to the `Tool` interface, without modifying the core loop -- this is a classic embodiment of the Open-Closed Principle in Agent architecture.
 
+### Core Terminology Quick Reference
+
+Before diving into the subsequent chapters, here are several core concepts that appear throughout the codebase:
+
+| Term | Definition | Source Code |
+|------|------------|-------------|
+| **State** | The mutable state object for a single query loop iteration, containing message history, compression tracking, output token recovery count, etc. | `query.ts:204` `type State` |
+| **Tool** | The unified tool interface; all capabilities (built-in/MCP/plugins) implement this interface and share the same execution pipeline | `Tool.ts` |
+| **Message** | A single message in the conversation, with subtypes including `UserMessage`, `AssistantMessage`, `ToolUseSummaryMessage`, etc. | `types/message.ts` |
+| **StreamEvent** | The event unit yielded through the generator pipeline, representing a token, tool result, or state change | `types/message.ts` |
+| **Terminal / Continue** | The two transition states of the query loop -- `Terminal` means the loop ends, `Continue` means another iteration is needed | `query/transitions.ts` |
+| **QueryEngine** | The session-level engine that manages conversation lifecycle (persistence, budgeting, result assembly); the boundary between the UI layer and the core loop | `QueryEngine.ts` |
+
 ## 1.4 Source Directory Structure
 
 Claude Code's source code is approximately 1,900 files, 512K+ lines of TypeScript, with the following directory structure:
@@ -193,14 +214,14 @@ Claude Code's source code is approximately 1,900 files, 512K+ lines of TypeScrip
 src/
 ├── main.tsx                 # CLI main entry (4,683 lines)
 │                            # Commander.js parses args, dispatches to REPL/headless/SDK modes
-├── QueryEngine.ts           # Session engine (1,155 lines)
+├── QueryEngine.ts           # Session engine (1,295 lines)
 │                            # Manages full conversation lifecycle: message persistence, budget tracking, result assembly
-├── query.ts                 # Core query loop (1,728 lines)
+├── query.ts                 # Core query loop (1,729 lines)
 │                            # Single query state machine: compression->API call->tool execution->recover/continue
 ├── Tool.ts                  # Tool interface definition
 │                            # Unified type constraint for all tools (built-in/MCP/plugins)
 ├── tools.ts                 # Tool registration and assembly
-├── context.ts               # Context building (190 lines)
+├── context.ts               # Context building (189 lines)
 │                            # getSystemContext/getUserContext: Git state, CLAUDE.md, date
 │
 ├── bootstrap/               # Global state management
@@ -208,12 +229,12 @@ src/
 │                            # All subsystems read/write shared state via accessors, avoiding import cycles
 │
 ├── entrypoints/             # Entry points
-│   ├── init.ts              # Core initialization (341 lines): 14-step idempotent initialization
+│   ├── init.ts              # Core initialization (340 lines): 14-step idempotent initialization
 │   ├── cli.tsx              # Fast path (--version, MCP server, bridge)
 │   └── sdk/                 # SDK entry and types
 │
 ├── screens/                 # Main screens
-│   ├── REPL.tsx             # Main conversation UI (895KB): message rendering, input handling, state management
+│   ├── REPL.tsx             # Main conversation UI (875KB): message rendering, input handling, state management
 │   ├── Doctor.tsx           # Diagnostics screen
 │   └── ResumeConversation.tsx
 │
@@ -251,7 +272,7 @@ src/
 ├── coordinator/             # Multi-Agent coordinator (internal feature, Feature-gated)
 ├── memdir/                  # Memory system (~/.claude/memory/ management)
 ├── skills/                  # Skills system (18+ built-in skills)
-├── ink/                     # Custom terminal renderer (251KB core, React->terminal output)
+├── ink/                     # Custom terminal renderer (~1.0MB core, React->terminal output)
 ├── vim/                     # Vim mode
 ├── schemas/                 # Zod Schema definitions
 └── utils/                   # Common utility library

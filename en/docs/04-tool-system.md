@@ -2,9 +2,21 @@
 
 > The tool system is the carrier of Claude Code's capabilities. 66+ built-in tools + MCP extensions = unlimited possibilities.
 
+All of Claude Code's capabilities—file read/write, Shell commands, code search, sub-Agent spawning, MCP external service calls—are exposed to the model through a unified tool system. The model does not directly operate on the filesystem or network; instead, it accomplishes all side-effecting operations by calling tools. The tool system is the sole bridge connecting "model intelligence" to "the real world."
+
+The core architecture of this system is divided into three layers:
+
+- **Design layer**: The `Tool` generic interface (`src/Tool.ts`)—defines the contract every tool must implement: execution logic, input Schema, safety semantic markers (read-only/destructive/concurrency-safe), permission checks, and UI rendering
+- **Assembly layer**: `getAllBaseTools()` → `getTools()` → `assembleToolPool()` (`src/tools.ts`)—from compile-time pruning to runtime filtering, ultimately merging built-in tools and MCP tools into a unified tool pool
+- **Execution layer**: `StreamingToolExecutor` (`src/services/tools/`)—executes tools concurrently while the model streams output, handling permission checks, Hook callbacks, and result formatting
+
+This design yields two key advantages: adding a new tool only requires implementing the `Tool` interface, with no changes needed to the execution pipeline or permission system; safety semantics (`isReadOnly`, `isDestructive`) are encoded as interface methods rather than external configuration, ensuring that safety properties always stay in sync with the tool implementation.
+
+**Chapter roadmap**: Sections 4.1–4.2 cover interface definition and the assembly pipeline; 4.3 provides a full inventory of built-in tools; 4.4–4.5 explain the execution lifecycle and concurrency control; 4.6–4.7 dive deep into the two most complex tools (BashTool and AgentTool); 4.8–4.10 cover large result handling, MCP integration, and deferred loading; 4.11–4.12 summarize design insights and UI rendering patterns.
+
 ## 4.1 Tool Interface Definition
 
-All of Claude Code's capabilities—file operations, command execution, Agent spawning, MCP calls—are uniformly abstracted as the `Tool` interface (`src/Tool.ts`). This is one of the most core types in the entire system:
+The starting point of the three-layer architecture described above is the `Tool` interface (`src/Tool.ts`)—the unified contract for all tools (built-in, MCP, REPL). This is one of the most core types in the entire system:
 
 ```typescript
 export type Tool<Input, Output, P extends ToolProgressData> = {
@@ -179,7 +191,7 @@ This code has two key design decisions:
 
 ## 4.3 Built-in Tool Inventory
 
-Claude Code includes **66+ built-in tools**, categorized by function as follows:
+Claude Code includes **66+ built-in tools**, organized into 7 categories by functional domain. These categories reflect the core capability model of a coding agent: **File Operations** are the foundation (read, write, and search are the highest-frequency operations), **Agent Management** supports multi-Agent collaboration, **User Interaction** and **System** ensure human-in-the-loop control, and **MCP Integration** provides an outlet for unlimited extension. The guiding principle for tool selection is "cover 95% of a developer's daily workflow"—the remaining 5% is handled by BashTool (the universal fallback) and MCP extensions.
 
 | Category | Tool | Description |
 |----------|------|-------------|
@@ -216,6 +228,8 @@ Claude Code includes **66+ built-in tools**, categorized by function as follows:
 | | ListPeersTool | List peer Agents |
 
 ## 4.4 Tool Execution Lifecycle
+
+When the model produces a `tool_use` block during streaming output, the call request is not executed directly—it must pass through a complete processing pipeline. From tool lookup, input validation, permission checking (which may involve user interaction), to actual execution, result formatting, and Hook callbacks, there are 8 stages in total. This pipeline is identical for all tools (built-in, MCP, REPL) and is a direct manifestation of the unified `Tool` interface from Section 4.1. Understanding this pipeline is key to understanding Claude Code's security model and execution semantics.
 
 ```mermaid
 flowchart TD

@@ -2,6 +2,8 @@
 
 > A good coding agent doesn't just write code — it modifies code in a minimally destructive way.
 
+Code editing is the most core and most dangerous capability of a coding agent — a single wrong edit can break an entire codebase, while a good editing strategy enables an agent to modify code with the precision of an experienced developer. Claude Code's editing strategy is designed around three core principles: **minimal destructiveness** (only change what needs changing), **verifiability** (every edit has a clear before/after), and **hallucination resistance** (the model cannot silently write non-existent code). Based on these principles, Claude Code favors FileEditTool (search-and-replace) over FileWriteTool (full file overwrite) — the former naturally satisfies all three constraints, while the latter is only suitable for creating new files or scenarios requiring a complete rewrite.
+
 ## 5.1 Two Editing Tools
 
 Claude Code provides two file editing tools, each suited for different scenarios:
@@ -13,11 +15,15 @@ Claude Code provides two file editing tools, each suited for different scenarios
 
 The system prompt explicitly guides the model: **prefer FileEditTool**. Only use FileWriteTool when creating entirely new files or when a complete rewrite is needed.
 
+FileEditTool is the default choice because it solves the thorniest problem of LLM code editing at an engineering level: how do you let a model that may hallucinate safely modify real code? The following sections dive deep into FileEditTool's design to understand the "why" behind every engineering decision.
+
 ## 5.2 FileEditTool: The Search-and-Replace Approach
 
-FileEditTool is the core tool for code editing in Claude Code, employing an exact string replacement strategy.
+FileEditTool is the core tool for code editing in Claude Code, employing an exact string replacement strategy. This section unfolds from the outside in: first the interface design (5.2.1), then the engineering considerations behind the approach selection (5.2.2), followed by input preprocessing (5.2.3), the validation pipeline (5.2.4), the uniqueness constraint (5.2.5), and implementation details (5.2.6).
 
-### Input Schema
+### 5.2.1 Interface Design and How It Works
+
+#### Input Schema
 
 ```typescript
 {
@@ -28,7 +34,7 @@ FileEditTool is the core tool for code editing in Claude Code, employing an exac
 }
 ```
 
-### How It Works
+#### How It Works
 
 FileEditTool requires no line numbers, no regular expressions. Its operation is extremely simple:
 
@@ -37,7 +43,7 @@ FileEditTool requires no line numbers, no regular expressions. Its operation is 
 3. Replace it with `new_string`
 4. If `old_string` is not unique, return an error requesting more context
 
-### Why Search-and-Replace Is Superior to Other Approaches
+### 5.2.2 Why Search-and-Replace Is Superior to Other Approaches
 
 There are deep engineering considerations behind this design choice:
 
@@ -78,7 +84,7 @@ Before settling on the search-and-replace approach, it's worth understanding why
 
 **Hallucination safety is the most underrated advantage of search-and-replace**. Consider this scenario: the model "remembers" a `handleError()` function in the file, but in reality this function was renamed to `processError()` in the last refactoring. If using search-and-replace, the model providing `old_string: "function handleError()"` will directly fail (error code 8: "String to replace not found in file"), and the model will re-read the file upon seeing the error and discover the correct function name. If using full file rewrite, the model might write out a complete file containing `handleError()`, overwriting the correct `processError()` — and this error is completely silent, with no error message at all.
 
-### Input Preprocessing Pipeline
+### 5.2.3 Input Preprocessing Pipeline
 
 Before entering the core validation and execution flow, the model's input goes through a preprocessing stage. `normalizeFileEditInput()` is called before `validateInput`, responsible for cleaning common imperfections in model output:
 
@@ -110,7 +116,7 @@ When the model's `old_string` output cannot exactly match the file content, `des
 
 This preprocessing stage is completely transparent to users — in most cases, users won't even realize it exists. But for editing files containing XML tags or special strings like `Human:`/`Assistant:` (e.g., prompt template files), it is critical to whether the edit succeeds.
 
-### Complete Validation Pipeline
+### 5.2.4 Complete Validation Pipeline
 
 The `validateInput()` method of FileEditTool implements a multi-layered validation pipeline that intercepts various issues before the edit is actually executed. The order of validation is deliberately designed: **low-cost checks come first, checks requiring file I/O come in the middle, and checks depending on file content come last**. This way, issues that can be caught early don't waste subsequent disk read overhead.
 
@@ -141,7 +147,7 @@ Several steps are worth discussing in detail:
 
 **Step 14: Config file protection**. For config files like `.claude/settings.json`, validation not only checks whether `old_string` exists, but also **simulates executing the edit** and verifies whether the result conforms to the JSON Schema. This prevents a dangerous scenario: a seemingly reasonable edit could corrupt the config file format, preventing Claude Code from starting properly.
 
-### Uniqueness Constraint
+### 5.2.5 Uniqueness Constraint
 
 In the validation pipeline above, the uniqueness constraint in step 13 deserves separate discussion. FileEditTool requires `old_string` to appear exactly once in the file. If it's not unique, the edit fails with the message:
 
@@ -157,7 +163,7 @@ The design philosophy behind this constraint is "better to fail than to guess":
 - **Require contextual understanding**: This forces the model to truly understand the code structure before editing. The model cannot take shortcuts by providing just a keyword — it must provide enough contextual snippet to uniquely identify the modification point
 - **`replace_all` as an explicit escape valve**: When batch operations like variable renaming are needed, the model must explicitly set `replace_all: true`. This design makes batch replacement a "deliberate choice" rather than an "accidental consequence"
 
-### Implementation Details: From Matching to Writing
+### 5.2.6 Implementation Details: From Matching to Writing
 
 #### Quote Normalization
 
@@ -386,66 +392,7 @@ if (size > MAX_EDIT_FILE_SIZE) {
 }
 ```
 
-## 5.4 Multi-File Edit Coordination
-
-When coordinated modifications across multiple files are needed (such as renaming a widely referenced function), Claude Code's strategy is:
-
-### Serial Editing
-
-Since FileEditTool's `isReadOnly()` returns `false`, multiple file edit operations are **executed serially**. This ensures:
-- No race conditions
-- Each edit is based on the file's latest state
-- If an intermediate edit fails, subsequent edits won't continue on an erroneous basis
-
-### Atomicity Considerations
-
-A single FileEditTool call is atomic — it either successfully replaces or doesn't modify at all. However, a sequence of edits across multiple files is not atomic. If a failure occurs midway, completed edits are not rolled back.
-
-This is an intentional design tradeoff:
-- A rollback mechanism would add enormous complexity
-- Git provides natural rollback capability (`git checkout`)
-- The model can autonomously fix issues after a failure
-
-### Cascade Edit Protection
-
-When multiple edit operations execute sequentially on the same file, there is a subtle risk: text inserted by a previous edit might be accidentally matched by a subsequent edit. `getPatchForEdits()` prevents this cascade error through substring checking:
-
-```typescript
-const appliedNewStrings: string[] = []
-
-for (const edit of edits) {
-  const oldStringToCheck = edit.old_string.replace(/\n+$/, '')
-
-  // Check if the current old_string is a substring of any previous new_string
-  for (const previousNewString of appliedNewStrings) {
-    if (oldStringToCheck !== '' && previousNewString.includes(oldStringToCheck)) {
-      throw new Error(
-        'Cannot edit file: old_string is a substring of a new_string from a previous edit.'
-      )
-    }
-  }
-
-  // ... execute edit ...
-  appliedNewStrings.push(edit.new_string)
-}
-```
-
-For example: suppose edit A replaces `foo()` with `foo() // calls bar()`, and edit B wants to replace `bar()` with `baz()`. Without cascade protection, edit B's `old_string: "bar()"` would match the `bar()` in the comment just inserted by edit A, turning the comment into `// calls baz()` — which is not the model's intent. With the substring check, the system detects that `"bar()"` is a substring of the previous `new_string` and directly throws an error, letting the model rethink its editing strategy.
-
-Note that before the check, trailing newlines are stripped from `old_string` (`replace(/\n+$/, '')`) to avoid false positives caused by newline character differences.
-
-### Worktree Isolation
-
-For large-scale refactoring, AgentTool supports Git Worktree isolation mode. Sub-agents work in an independent Worktree, and the user decides whether to merge upon completion:
-
-```typescript
-{
-  prompt: "Refactor all API handler functions...",
-  isolation: 'worktree'  // Work in an independent Worktree
-}
-```
-
-## 5.5 Read-Before-Edit Requirement
+## 5.4 Read-Before-Edit Requirement
 
 The system prompt mandates: **you must read a file before editing it**.
 
@@ -522,6 +469,65 @@ if (!contentUnchanged) {
 
 After a successful edit, `readFileState` is immediately updated with the new content and timestamp, preventing false positives in subsequent edits. This update is crucial — without it, when the model makes a second edit to the same file in the same turn, the new mtime (caused by the just-completed write) would be greater than the old readTimestamp, triggering a false "file modified externally" alarm. After the update, subsequent edits can proceed normally without re-reading the file.
 
+## 5.5 Multi-File Edit Coordination
+
+When coordinated modifications across multiple files are needed (such as renaming a widely referenced function), Claude Code's strategy is:
+
+### Serial Editing
+
+Since FileEditTool's `isReadOnly()` returns `false`, multiple file edit operations are **executed serially**. This ensures:
+- No race conditions
+- Each edit is based on the file's latest state
+- If an intermediate edit fails, subsequent edits won't continue on an erroneous basis
+
+### Atomicity Considerations
+
+A single FileEditTool call is atomic — it either successfully replaces or doesn't modify at all. However, a sequence of edits across multiple files is not atomic. If a failure occurs midway, completed edits are not rolled back.
+
+This is an intentional design tradeoff:
+- A rollback mechanism would add enormous complexity
+- Git provides natural rollback capability (`git checkout`)
+- The model can autonomously fix issues after a failure
+
+### Cascade Edit Protection
+
+When multiple edit operations execute sequentially on the same file, there is a subtle risk: text inserted by a previous edit might be accidentally matched by a subsequent edit. `getPatchForEdits()` prevents this cascade error through substring checking:
+
+```typescript
+const appliedNewStrings: string[] = []
+
+for (const edit of edits) {
+  const oldStringToCheck = edit.old_string.replace(/\n+$/, '')
+
+  // Check if the current old_string is a substring of any previous new_string
+  for (const previousNewString of appliedNewStrings) {
+    if (oldStringToCheck !== '' && previousNewString.includes(oldStringToCheck)) {
+      throw new Error(
+        'Cannot edit file: old_string is a substring of a new_string from a previous edit.'
+      )
+    }
+  }
+
+  // ... execute edit ...
+  appliedNewStrings.push(edit.new_string)
+}
+```
+
+For example: suppose edit A replaces `foo()` with `foo() // calls bar()`, and edit B wants to replace `bar()` with `baz()`. Without cascade protection, edit B's `old_string: "bar()"` would match the `bar()` in the comment just inserted by edit A, turning the comment into `// calls baz()` — which is not the model's intent. With the substring check, the system detects that `"bar()"` is a substring of the previous `new_string` and directly throws an error, letting the model rethink its editing strategy.
+
+Note that before the check, trailing newlines are stripped from `old_string` (`replace(/\n+$/, '')`) to avoid false positives caused by newline character differences.
+
+### Worktree Isolation
+
+For large-scale refactoring, AgentTool supports Git Worktree isolation mode. Sub-agents work in an independent Worktree, and the user decides whether to merge upon completion:
+
+```typescript
+{
+  prompt: "Refactor all API handler functions...",
+  isolation: 'worktree'  // Work in an independent Worktree
+}
+```
+
 ## 5.6 Indentation Preservation
 
 The system prompt provides explicit guidance about indentation:
@@ -566,9 +572,34 @@ Cell positioning supports two methods:
 1. **Native cell ID**: Directly using each cell's `id` field in the notebook
 2. **Index format**: `cell-N` format (e.g., `cell-0`, `cell-3`), parsed into a numeric index by `parseCellId()`
 
+### Edge Case Handling
+
+The NotebookEditTool implementation has several noteworthy edge case treatments:
+
+**Replace auto-converts to Insert**: When `edit_mode` is `replace` but `cellIndex` equals `cells.length` (i.e., pointing beyond the end), it automatically downgrades to `insert` mode. This tolerates the model's common off-by-one errors when calculating cell indices.
+
+**Cell ID version compatibility**: Only notebooks with nbformat >= 4.5 support cell IDs. For older formats, inserting new cells does not generate an `id` field, avoiding compatibility issues caused by writing unrecognized fields. New cell IDs use `Math.random().toString(36).substring(2, 15)` to generate random strings.
+
+**Non-cached JSON parsing**: The `call()` method uses non-cached `jsonParse()` rather than `safeParseJSON()` to parse notebook content. This is because the parsed object is directly modified afterward (`cells.splice`, `targetCell.source = ...`). If a cached version were used, modifications would pollute the cache, causing `validateInput()` and subsequent calls to receive tampered objects.
+
+### Validation Differences with FileEditTool
+
+While NotebookEditTool shares some security mechanisms, its validation pipeline differs significantly from FileEditTool:
+
+| Feature | FileEditTool | NotebookEditTool |
+|---------|-------------|-----------------|
+| **Read prerequisite** | Requires full read (rejects `isPartialView`) | Only requires having been read (does not check `isPartialView`) |
+| **String matching** | Exact match + quote normalization + desanitization | None — positions by cell, no string matching |
+| **Uniqueness constraint** | `old_string` must be unique | Not applicable — cell ID/index is inherently unique |
+| **File size limit** | 1 GiB upper limit | No limit |
+| **Pre-edit secret check** | Checks whether `new_string` contains secrets | No check |
+| **Config file protection** | Schema validation for settings.json | Not applicable |
+
+This difference is reasonable: the notebook's cell structure provides a natural positioning mechanism (cell ID or index), eliminating the need for FileEditTool's complex string-matching-based validation. However, this also means NotebookEditTool has fewer layers of security protection — it relies more on the notebook's structured format itself to ensure editing correctness.
+
 ### Permissions and Security
 
-NotebookEditTool shares the same security mechanisms as FileEditTool:
+NotebookEditTool shares the same core security mechanisms as FileEditTool:
 - **Read prerequisite check**: Must read the notebook file before editing (consistent with FileEditTool/FileWriteTool)
 - **External modification detection**: Detects whether the file was externally modified via mtime comparison
 - **UNC path protection**: Also intercepts Windows UNC paths

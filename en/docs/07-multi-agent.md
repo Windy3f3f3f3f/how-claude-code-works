@@ -37,6 +37,16 @@ graph LR
 
 These three patterns increase in complexity, but share the same underlying infrastructure — the `AgentTool` tool, `ToolUseContext` context isolation, and `<task-notification>` result notifications. Understanding the Sub-Agent pattern is the foundation for understanding the other two patterns.
 
+**Decision Guide for Choosing a Multi-Agent Pattern:**
+
+- Simple, independent subtask? --> Sub-Agent pattern (the simplest choice)
+- Need the output of a subtask as input for the next step? --> Sub-Agent pattern (synchronous, parent Agent orchestrates sequentially)
+- Need multiple Workers processing different tasks in parallel?
+  - Need central orchestration and result synthesis? --> Coordinator pattern
+  - Peer-to-peer collaboration between Agents with no central control? --> Swarm pattern
+- Need pre-execution plan approval? --> Plan mode (can be combined with any of the above)
+- Not sure? --> Start with the Sub-Agent pattern and upgrade when complexity demands it
+
 ## 7.2 Sub-Agent Pattern (AgentTool)
 
 This is the most fundamental multi-Agent pattern. The parent Agent spawns a sub-Agent via [AgentTool](/en/docs/04-tool-system.md) to execute independent tasks.
@@ -168,7 +178,7 @@ flowchart TD
 
 #### Stage 1: Type Resolution
 
-The core logic for type resolution is in `AgentTool.tsx:318-356`:
+The core logic for type resolution is in the `effectiveType` decision block of `AgentTool.tsx`:
 
 ```typescript
 // Fork subagent experiment routing:
@@ -831,6 +841,8 @@ Workers can freely read and write files in this directory (without permission co
 Scratchpad provides a direct bypass channel: Worker A writes detailed findings to a file, and Worker B reads them directly — without going through the Coordinator's "understanding and retelling."
 
 ## 7.5 Worker Result Delivery
+
+After a sub-Agent / Worker completes its task, how does the result get back to the parent safely and reliably? This involves two fundamentally different return paths, a notification deduplication mechanism, and security classification against prompt injection.
 
 ### Synchronous vs Asynchronous: Two Return Paths
 

@@ -123,25 +123,6 @@ flowchart TD
 
 ## 8.3 Storage Architecture
 
-### Storage Format
-
-Each memory is an independent Markdown file with YAML frontmatter:
-
-```markdown
----
-name: Terse reply preference
-description: User doesn't want to see summaries at the end of responses
-type: feedback
----
-
-Don't summarize completed operations at the end of every response.
-
-**Why:** User explicitly stated they can read diffs themselves.
-**How to apply:** Keep all responses concise, omit trailing summaries.
-```
-
-Key design: the `description` field is not just metadata — it is the **core basis for the recall system**. When the Sonnet model selects relevant memories, it primarily relies on description to judge relevance, so the description must be specific enough — "user preference" is too vague, "user doesn't want to see summaries at the end of responses" is precise enough.
-
 ### Directory Structure
 
 Memory files are stored in project-specific directories:
@@ -168,6 +149,25 @@ The memory directory location is determined through a three-level priority chain
 **Security Decision: Why is projectSettings Excluded?**
 
 `getAutoMemPathSetting()` only reads from user/managed settings, **not** from projectSettings. The reason is security: projectSettings comes from the project's `.claude/settings.json` file, which is checked into the code repository. A malicious repository could set `autoMemoryDirectory: "~/.ssh"`, allowing Claude Code's memory write operations (Edit/Write tools) to gain write access to the user's SSH key directory. This is consistent with the principle in the permission system of "not trusting project-level settings for security-sensitive paths."
+
+### Storage Format
+
+Each memory is an independent Markdown file with YAML frontmatter:
+
+```markdown
+---
+name: Terse reply preference
+description: User doesn't want to see summaries at the end of responses
+type: feedback
+---
+
+Don't summarize completed operations at the end of every response.
+
+**Why:** User explicitly stated they can read diffs themselves.
+**How to apply:** Keep all responses concise, omit trailing summaries.
+```
+
+Key design: the `description` field is not just metadata — it is the **core basis for the recall system**. When the Sonnet model selects relevant memories, it primarily relies on description to judge relevance, so the description must be specific enough — "user preference" is too vague, "user doesn't want to see summaries at the end of responses" is precise enough.
 
 ### Git Worktree Sharing
 
@@ -197,7 +197,12 @@ None of the above satisfied                   →  Enabled by default
 
 ## 8.4 MEMORY.md: Index, Not Container
 
-`MEMORY.md` is the **index file** of the memory system, not a memory container. Each entry should be a single-line link:
+`MEMORY.md` is the **entrypoint** of the memory system, serving two roles:
+
+1. **Index**: Lists all available memory files with brief descriptions, enabling the model to quickly locate relevant memories
+2. **Quick check**: At session startup, the MEMORY.md content is automatically loaded into the user context via `getClaudeMds()` (loaded in the same batch as CLAUDE.md), so the model knows which memories are available from the very first turn
+
+Because MEMORY.md is fully loaded every session, it must stay compact — it is an index, not a memory container. Each entry should be a single-line link:
 
 ```markdown
 - [User role](user_role.md) — Data scientist focused on observability
@@ -262,7 +267,7 @@ When the user submits a query, the system automatically searches for relevant me
 
 ```mermaid
 flowchart TD
-    Input[User input + recent tool usage] --> Scan["1. scanMemoryFiles()<br/>Scan memory directory<br/>Only read first 30 lines of frontmatter per file<br/>Sort by mtime descending<br/>Max 200 files"]
+    Input[User input + recent tool usage] --> Scan["1. scanMemoryFiles()<br/>Scan all .md files in memory directory<br/>Only read first 30 lines of frontmatter per file<br/>Sort by mtime descending<br/>Keep newest 200"]
     Scan --> Format["2. formatMemoryManifest()<br/>Format as manifest:<br/>[type] filename (timestamp): description"]
     Format --> Eval["3. selectRelevantMemories()<br/>sideQuery() + Sonnet model<br/>Input: query + manifest + recentTools<br/>Output: up to 5 filenames"]
     Eval --> Filter["4. Filter<br/>Remove already-surfaced memories (alreadySurfaced)<br/>Verify filenames exist in known set"]
@@ -292,9 +297,11 @@ export async function scanMemoryFiles(memoryDir: string, signal: AbortSignal) {
     .filter(r => r.status === 'fulfilled')
     .map(r => r.value)
     .sort((a, b) => b.mtimeMs - a.mtimeMs)
-    .slice(0, MAX_MEMORY_FILES)  // MAX_MEMORY_FILES = 200
+    .slice(0, MAX_MEMORY_FILES)  // Keep newest 200 (MAX_MEMORY_FILES = 200)
 }
 ```
+
+Note that `MAX_MEMORY_FILES = 200` is not a scan limit but a **result count limit**. `readdir` reads all `.md` files in the directory, each has its frontmatter read and mtime obtained, then they are sorted by modification time descending, and finally `.slice(0, 200)` keeps only the newest 200. If the memory directory contains 500 files, all 500 are scanned, but only the newest 200 participate in the subsequent semantic recall.
 
 **Why is this faster?**
 
@@ -439,25 +446,25 @@ sequenceDiagram
     end
 ```
 
-### Triggering and Mutual Exclusion
+### Triggering, Mutual Exclusion, and Overlap Protection
 
-The extraction Agent is triggered in `handleStopHooks` — when the main Agent completes its response (no more tool calls). But it doesn't run every time:
+The extraction Agent's execution is governed by three layers of control, ensuring neither omission nor duplication:
 
-**Mutual exclusion mechanism**: `hasMemoryWritesSince()` checks whether the main Agent has already written to memory files within the recent message range. If the main Agent has already proactively saved memory (e.g., the user said "remember this" and the main Agent directly called Write), the extraction Agent **skips** — avoiding duplicate memories for the same conversation segment.
+**1. Trigger timing**: The extraction Agent is triggered in `handleStopHooks` — when the main Agent completes its response (no more tool calls).
 
-**Turn throttling**: The `turnsSinceLastExtraction` counter controls extraction frequency. Not every turn needs extraction — many turns (like simple Q&A) don't have information worth memorizing.
+**2. Frequency control**: Not every turn ending triggers extraction — there are two filters:
+- **Mutual exclusion check**: `hasMemoryWritesSince()` checks whether the main Agent has already written to memory files within the recent message range. If the main Agent has already proactively saved memory (e.g., the user said "remember this" and the main Agent directly called Write), the extraction Agent **skips** — avoiding duplicate memories for the same conversation segment.
+- **Turn throttling**: The `turnsSinceLastExtraction` counter controls extraction frequency. Many turns (like simple Q&A) don't have information worth memorizing, so extraction isn't needed every time.
 
-### Overlap Protection
-
-If the previous extraction is still running when a new turn ends, the system doesn't start concurrent extractions:
+**3. Concurrency protection**: If the previous extraction is still running when a new turn ends, the system doesn't start concurrent extractions. Instead, it uses a `pendingContext` queue + trailing run mechanism:
 
 ```
-inProgress = true → Queue new request as pendingContext
+inProgress = true → Queue new request as pendingContext (later arrivals overwrite earlier ones)
 Current extraction completes → Check pendingContext, if present start trailing run
 trailing run → Only process new messages since cursor advancement
 ```
 
-This design ensures: (1) no two extraction Agents write to the memory directory simultaneously (avoiding conflicts); (2) no conversation content is missed.
+This design ensures: (1) no two extraction Agents write to the memory directory simultaneously (avoiding conflicts); (2) no conversation content is missed — even if extraction can't keep up, the latest context is queued and processed immediately after the current extraction finishes.
 
 ### Tool Permissions: Strict Write Whitelist
 
@@ -589,15 +596,30 @@ Agent memory is built through the same `buildMemoryPrompt()` function as main me
 
 ## 8.11 How Memory Is Injected into Conversations
 
-Understanding how memory reaches the model's context window:
+Memory reaches the model's context window through two paths — MEMORY.md goes via the system prompt (loaded every session), recalled memories go via user messages (injected on demand). Understanding these two paths is essential for grasping the memory system's context overhead.
 
-### MEMORY.md: System Prompt Injection
+### MEMORY.md: User Context Injection
 
-MEMORY.md content is injected into the system prompt via `systemPromptSection('memory', () => loadMemoryPrompt())`. This means:
+MEMORY.md content is loaded through the `getMemoryFiles()` → `getClaudeMds()` pipeline, following the same path as CLAUDE.md, ultimately injected as part of the user context (`getUserContext()`). A separate memory behavioral instruction block is also injected into the system prompt via `systemPromptSection('memory', () => loadMemoryPrompt())`, containing the four-type taxonomy, save rules, and so on.
 
-- Automatically loaded every session
-- Truncated via `truncateEntrypointContent()`
-- Located in the dynamic section of the system prompt
+This means:
+
+- Automatically loaded every session, no model action required
+- MEMORY.md content is truncated via `truncateEntrypointContent()` (200 lines / 25KB)
+- Behavioral instructions reside in the system prompt; MEMORY.md content resides in the user context
+
+The actual MEMORY.md content injected into the context looks roughly like this:
+
+```
+Contents of ~/.claude/projects/a1b2c3d4/memory/MEMORY.md (user's auto-memory, persists across conversations):
+
+- [User role](user_role.md) — Data scientist focused on observability
+- [Terse reply preference](feedback_terse.md) — No trailing summaries
+- [Merge freeze](project_freeze.md) — 2026-03-05 mobile release freeze
+- [Bug tracking](reference_linear.md) — Pipeline bugs in Linear INGEST project
+```
+
+This text is assembled by `getClaudeMds()` (`src/utils/claudemd.ts`), in the format `Contents of {path}{description}:\n\n{content}`. The `description` part varies by file type — for MEMORY.md it is `(user's auto-memory, persists across conversations)`.
 
 ### Recalled Memories: User Message Injection
 
@@ -606,17 +628,42 @@ Memories selected by Sonnet are injected as **user messages** (with `isMeta: tru
 ```typescript
 case 'relevant_memories': {
   return wrapMessagesInSystemReminder(
-    attachment.memories.map(m => createUserMessage({
-      content: `${memoryHeader(m.path, m.mtimeMs)}\n\n${m.content}`,
-      isMeta: true
-    }))
+    attachment.memories.map(m => {
+      const header = m.header ?? memoryHeader(m.path, m.mtimeMs)
+      return createUserMessage({
+        content: `${header}\n\n${m.content}`,
+        isMeta: true
+      })
+    })
   )
 }
 ```
 
-`memoryHeader()` includes the file path, human-readable distance of modification time (e.g., "3 days ago"), and a freshness warning. Memories are wrapped in `<system-reminder>` tags, grouped with other contextual information (like Read/Grep results).
+`memoryHeader()` generates different headers based on the memory's freshness (`src/utils/attachments.ts`):
 
-The `isMeta: true` flag ensures these messages are not displayed as user messages in the UI, but the model can see them.
+- **Fresh memories** (today/yesterday): `Memory (saved today): ~/.claude/projects/.../feedback_terse.md:`
+- **Stale memories** (>1 day): Outputs a freshness warning first, then the path. For example:
+
+```
+This memory is 47 days old. Memories are point-in-time observations, not live state — claims about code behavior or file:line citations may be outdated. Verify against current code before asserting as fact.
+
+Memory: ~/.claude/projects/.../project_freeze.md:
+
+---
+name: Merge freeze
+description: 2026-03-05 merge freeze, mobile release
+type: project
+---
+
+Merge freeze after 2026-03-05, mobile v3.2 release.
+
+**Why:** Product team requires no non-urgent PR merges during freeze period.
+**How to apply:** PRs after 03-05 should be postponed to next week.
+```
+
+Memories are wrapped in `<system-reminder>` tags (via `wrapMessagesInSystemReminder`), grouped with other contextual information (like Read/Grep results).
+
+The `isMeta: true` flag ensures these messages are not displayed as user messages in the UI, but the model can see them. This means users are not disturbed by large volumes of memory injections, while the model can reference this information on every turn.
 
 ## 8.12 Design Insights
 

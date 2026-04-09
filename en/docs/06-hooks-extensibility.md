@@ -6,13 +6,21 @@ Imagine these scenarios: automatically running lint checks every time Claude exe
 
 The core design philosophy of Hooks is: **every key point in the Agent Loop exposes an event, and external code can listen to these events and inject behavior**. This shares the same design philosophy as Git Hooks (pre-commit, post-merge) and Webpack Plugins, but the problem Claude Code faces is more complex — it needs to handle permission control, long-running async tasks, multi-Agent coordination, and other scenarios, making the Hook system design far more complex than traditional "before/after interceptors."
 
+**Chapter Roadmap:**
+
+- **6.1 Event Overview**: 27 Hook event types — categorization and trigger timing
+- **6.2 Hook Types**: 4 configurable Hooks (Command/Prompt/Agent/HTTP) + 2 programmatic Hooks (Callback/Function)
+- **6.3 Matcher**: Three-level matching mechanism and cooperation with `if` conditions
+- **6.4 Execution Engine**: 6-stage pipeline — trust check, matching, deduplication, parallel execution, output parsing, result aggregation
+- **6.5–6.9 Advanced Topics**: JSON output protocol, trust model and security, PermissionRequest deep dive, Stop Hook, practical patterns
+
 ## 6.1 Hook Event Overview
 
-### Why These 25 Events?
+### Why These 27 Events?
 
 Claude Code's Hook event design follows one principle: **cover all key decision points across the complete Agent Loop lifecycle**. Looking back at the Agent Loop from [Chapter 2](/en/docs/02-agent-loop.md), a complete interaction involves: user input → model reasoning → tool call (permission check → execution → result) → model decides whether to continue → final output. Each step may require external intervention, so each step needs a corresponding Hook event.
 
-The source code defines the complete event list (`src/entrypoints/agentSdkTypes.ts`):
+The source code defines the complete event list (`src/entrypoints/sdk/coreTypes.ts`):
 
 ```typescript
 export const HOOK_EVENTS = [
@@ -36,6 +44,7 @@ Categorized by function:
 | | PostToolUseFailure | After tool execution failure | `tool_name` |
 | **Permission System** | PermissionRequest | At permission determination | `tool_name` |
 | | PermissionDenied | When auto-classifier rejects | `tool_name` |
+| **Notification** | Notification | System notification triggered | `notification_type` |
 | **Session Lifecycle** | SessionStart | Session starts | `source` (`startup`/`resume`/`clear`/`compact`) |
 | | SessionEnd | Session ends | `reason` |
 | | UserPromptSubmit | When user submits input | None |
@@ -62,7 +71,7 @@ Categorized by function:
 
 ### Why So Many Events?
 
-At first glance, 25 events may seem excessive, but each event has a clear use case:
+At first glance, 27 events may seem excessive, but each event has a clear use case:
 
 - **Tool before/after events** (PreToolUse/PostToolUse): The most core extension points. Pre-hooks can block execution or modify input; post-hooks can perform checks or inject context.
 - **Session events** (SessionStart/SessionEnd): Initialize environments, clean up resources, report audit logs.
@@ -72,6 +81,38 @@ At first glance, 25 events may seem excessive, but each event has a clear use ca
 ## 6.2 Hook Types
 
 Claude Code supports four configurable Hook types and two programmatic Hook types. The first four can be written in `settings.json`, while the latter two are only used internally within the SDK/plugins.
+
+| Type | Persistence | Execution Method | Applicable Scenarios |
+|------|------------|-----------------|---------------------|
+| **Command** | settings.json | Spawns a shell subprocess, communicates via stdin/stdout | Logging, lint, CI triggers — covers the vast majority of scenarios |
+| **Prompt** | settings.json | Single-turn LLM call, returns ok/not-ok | Safety checks or code reviews requiring semantic understanding |
+| **Agent** | settings.json | Multi-turn Agent Loop, can call tools to verify | Complex verification workflows (running tests, type checking) |
+| **HTTP** | settings.json | POST request to an external endpoint | Webhook notifications, audit logging, enterprise compliance |
+| **Callback** | In-memory only (SDK/plugin registration) | Direct in-process async function call | Internal instrumentation, file tracking, commit attribution |
+| **Function** | In-memory only (session-level registration) | In-process call, isolated by sessionId | Structured output enforcement for Agent Hooks |
+
+Before diving into each type, here is a minimal Hook configuration example to give you an intuitive sense of the overall format:
+
+```json
+// ~/.claude/settings.json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'About to run a Bash command'"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+The structure is straightforward: the `hooks` object's keys are event names (e.g., `PreToolUse`), and values are arrays where each element contains a `matcher` (optional match filter) and `hooks` (the list of Hooks to execute for that match).
 
 ### 1. Command Hook
 
@@ -397,10 +438,6 @@ The value of this optimization is: **the vast majority of events have no Hooks c
 export function shouldSkipHookDueToTrust(): boolean {
   const isInteractive = !getIsNonInteractiveSession()
   if (!isInteractive) return false  // Trust is implicit in SDK mode
-  const hasTrust = checkHasTrustDialogAccepted()
-  return !hasTrust  // true = skip Hook
-}
-```
   const hasTrust = checkHasTrustDialogAccepted()
   return !hasTrust  // true = skip Hook
 }
@@ -736,6 +773,33 @@ Hooks control Claude Code's behavior by outputting JSON to stdout. The complete 
   hookEventName: 'Elicitation',
   action?: 'accept' | 'decline' | 'cancel',
   content?: Record<string, unknown>
+}
+```
+
+**CwdChanged**—when the working directory changes, can register new file watch paths:
+
+```typescript
+{
+  hookEventName: 'CwdChanged',
+  watchPaths?: string[]            // absolute paths to register for FileChanged watching
+}
+```
+
+**FileChanged**—when a watched file changes, can also update watch paths:
+
+```typescript
+{
+  hookEventName: 'FileChanged',
+  watchPaths?: string[]            // update FileChanged watch absolute paths
+}
+```
+
+**WorktreeCreate**—when a worktree is created, can specify the worktree path:
+
+```typescript
+{
+  hookEventName: 'WorktreeCreate',
+  worktreePath: string             // path of the newly created worktree
 }
 ```
 
@@ -1130,7 +1194,7 @@ function hookDedupKey(m: MatchedHook, payload: string): string {
 
 ### 1. Event-Driven + Dual-Layer Matching = Precise Control
 
-25 event types x matcher (coarse-grained) x if condition (fine-grained) covers nearly all extension needs. Non-matching Hooks are filtered out before spawning processes — this is true zero-cost abstraction.
+27 event types x matcher (coarse-grained) x if condition (fine-grained) covers nearly all extension needs. Non-matching Hooks are filtered out before spawning processes — this is true zero-cost abstraction.
 
 ### 2. Exit Codes Are the Core Communication Protocol
 

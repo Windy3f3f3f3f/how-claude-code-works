@@ -148,7 +148,9 @@ After entering Plan Mode, Claude Code uses the **Attachment System** to inject i
 
 ### 10.4.1 Attachment Throttling Mechanism
 
-Instructions aren't injected in full every turn — that would waste too many tokens. `src/utils/attachments.ts:1189-1242` implements a fine-grained throttling logic:
+Instructions aren't injected in full every turn — that would waste too many tokens. Plan Mode system messages are essentially **behavioral guardrails** for the model ("you can only read, not write"), but repeating the full instructions every turn not only wastes tokens, it can also cause the model to develop "fatigue" toward those instructions — overly frequent repetition actually weakens their effectiveness. So Claude Code employs a **progressive reminder strategy**: provide full context in the first turn to establish rule awareness, trust the model's short-term memory for the next several turns, then periodically refresh the model's awareness of the current mode with lightweight reminders.
+
+`src/utils/attachments.ts:1189-1242` implements the specific rules of this throttling logic:
 
 | Turn | Injected Content | Reason |
 |------|-----------------|--------|
@@ -297,7 +299,9 @@ The slug is cached within the session (`planSlugCache: Map<SessionId, string>`),
 
 ### 10.5.2 Resume and Fork
 
-When a user resumes a previous session, the corresponding plan file needs to be recovered. `copyPlanForResume()` (`src/utils/plans.ts:164-230`) uses a layered recovery strategy:
+When a user resumes a previous session, the corresponding plan file needs to be recovered. The reason it needs as many as 5 recovery layers is fundamentally because **local sessions and remote sessions (CCR) have entirely different file persistence capabilities**: local users' plan files are stored safely on disk, making recovery straightforward; but remote users' pods can be reclaimed at any time, meaning the file may no longer exist, so the system must attempt recovery from various locations in the transcript.
+
+`copyPlanForResume()` (`src/utils/plans.ts:164-230`) uses a layered recovery strategy:
 
 ```
 1. Direct file read       → File is still on disk (common for local sessions)
@@ -337,7 +341,13 @@ async validateInput(_input, { getAppState, options }) {
 }
 ```
 
-Why is this check necessary? Because **the model sometimes "forgets" it has already exited Plan Mode** (especially after context compaction), and calls `ExitPlanMode` again. This check prevents state corruption from duplicate exits.
+Why is this check necessary? Because **the model sometimes "forgets" it has already exited Plan Mode**, and calls `ExitPlanMode` again. This "amnesia" has three main causes:
+
+1. **Context compaction clears key signals**: The earlier ExitPlanMode success message may be discarded during compaction, leaving the model with no evidence that it has "already exited"
+2. **Deferred tool list is misleading**: The model still sees `ExitPlanMode` available in the tool list, making it easy to mistakenly assume it's still in Plan Mode
+3. **Mode state lacks explicit markers**: Current mode information is primarily conveyed through system attachments, and if an attachment wasn't injected due to throttling, the model can become confused about its state
+
+This check prevents state corruption from duplicate exits.
 
 ### 10.6.2 User Approval
 

@@ -277,6 +277,31 @@ When the `HISTORY_SNIP` Feature is enabled, it further projects a "trimmed view"
 
 `normalizeMessagesForAPI()` (`src/utils/messages.ts`, approximately 200 lines) is a critical processing step before messages are sent. It solves a core problem: **the internal message format of Claude Code and the message format required by the API are not fully consistent**.
 
+```typescript
+// src/utils/messages.ts
+export function normalizeMessagesForAPI(
+  messages: Message[],
+  tools: Tools = [],
+): (UserMessage | AssistantMessage)[] {
+  const availableToolNames = new Set(tools.map(t => t.name))
+
+  // 1. Attachment reordering + filter virtual messages
+  const reorderedMessages = reorderAttachmentsForAPI(messages)
+    .filter(m => !((m.type === 'user' || m.type === 'assistant') && m.isVirtual))
+
+  // 2. Build error→block type mapping (PDF too large, image too large, etc.)
+  const errorToBlockTypes: Record<string, Set<string>> = { ... }
+  const stripTargets = new Map<string, Set<string>>()  // userUUID → block types to strip
+
+  // 3-7. Iterate through messages, processing each one:
+  //   - Strip tool_reference, advisor blocks, error media items
+  //   - Handle thinking/signature blocks
+  //   - Merge split AssistantMessages with same ID
+  //   - Validate and repair tool_use/tool_result pairing
+  ...
+}
+```
+
 Below is each processing step and the problem it solves:
 
 **1. Attachment reordering** (`reorderAttachmentsForAPI`): Attachment messages may appear at arbitrary positions internally, but the API requires them to be before the semantically associated message. This step bubbles attachment messages upward until they encounter a `tool_result` or `assistant` message. **Without this step**, the API might see an isolated image block without knowing which message it's associated with.
@@ -321,7 +346,7 @@ Each level is "heavier" than the previous one — consuming more computational r
 1. **Tool Result Budget first**: Pure local operation, no API calls. Large results written to disk, context only retains a preview. Zero latency, zero cost.
 2. **Snip releases the most**: Directly removes redundant parts from the message list, freeing large amounts of tokens, potentially making subsequent compression unnecessary.
 3. **Microcompact has extremely low cost**: Cleans old tool results, no API calls, suitable for frequent execution.
-4. **Context Collapse before Autocompact**: Folding may bring token usage below the Autocompact threshold, thus preventing unnecessary full compression — preserving finer-grained context.
+4. **Context Collapse before Autocompact**: Context Collapse is a projection-based compression — creating a read-only folded view of messages without modifying original data (see Level 4). Folding may bring token usage below the Autocompact threshold, thus preventing unnecessary full compression — preserving finer-grained context.
 5. **Autocompact as the last resort**: Requires forking a sub-Agent to call the API and generate a summary, highest cost, and irreversible (original messages replaced by summary).
 
 ### Detailed Explanation of Each Level
@@ -425,7 +450,7 @@ if (feature('CONTEXT_COLLAPSE') && contextCollapse) {
 
 This can be analogized to a database View: the underlying table (message array) data remains unchanged, but what you see when querying (sending API requests) is a filtered/transformed view. Summaries are stored in an independent collapse store, and `projectView()` overlays the folded view onto the original messages at each loop entry.
 
-Context Collapse commits folds at approximately **90%** context utilization, while Autocompact triggers at approximately **87%** (because space needs to be reserved for compression output). Running both simultaneously would create competition — Autocompact might destroy the fine-grained context that Collapse is about to save. Therefore, **when Context Collapse is enabled and active, Autocompact is suppressed**.
+Context Collapse commits folds at approximately **90%** context utilization, while Autocompact's trigger threshold is slightly below this (depending on `reservedTokensForSummary`, approximately 83%~90% of total window, see Level 5 threshold calculation). Running both simultaneously would create competition — the source code comments explicitly state *"Autocompact firing at effective-13k (~93% of effective) sits right between collapse's commit-start (90%) and blocking (95%), so it would race collapse and usually win, nuking granular context that collapse was about to save"*. Therefore, **when Context Collapse is enabled and active, Autocompact is suppressed**.
 
 #### Level 5: Autocompact
 
@@ -449,8 +474,8 @@ isAutoCompactEnabled()
 
 // 4. Not context-collapse mode
 // When CONTEXT_COLLAPSE is enabled and active, autocompact is suppressed
-// Reason: collapse commits at ~90%, autocompact triggers at ~87% —
-// running both simultaneously creates competition, autocompact may destroy the fine-grained context collapse is about to save
+// Reason: collapse commits at ~90%, autocompact triggers at ~93% (relative to effectiveWindow) —
+// the two thresholds are close enough to race, autocompact may destroy the fine-grained context collapse is about to save
 
 // 5. Token threshold (with snipTokensFreed correction)
 tokenCountWithEstimation(messages) - snipTokensFreed >= getAutoCompactThreshold(model)
@@ -459,12 +484,24 @@ tokenCountWithEstimation(messages) - snipTokensFreed >= getAutoCompactThreshold(
 **Threshold calculation**:
 
 ```
-contextWindow = getContextWindowForModel(model)        // e.g., 200,000
-effectiveWindow = contextWindow - maxOutputTokens      // e.g., 200,000 - 16,000 = 184,000
-autoCompactThreshold = effectiveWindow - 13,000        // e.g., 184,000 - 13,000 = 171,000
+// Source: getEffectiveContextWindowSize()
+reservedTokensForSummary = Math.min(getMaxOutputTokensForModel(model), MAX_OUTPUT_TOKENS_FOR_SUMMARY)
+                         // MAX_OUTPUT_TOKENS_FOR_SUMMARY = 20,000 (based on p99.99 summary output of 17,387 tokens)
+                         // getMaxOutputTokensForModel is affected by slot-cap feature flag (8K when enabled)
+effectiveWindow = contextWindow - reservedTokensForSummary
+
+// Source: getAutoCompactThreshold()
+autoCompactThreshold = effectiveWindow - AUTOCOMPACT_BUFFER_TOKENS  // AUTOCOMPACT_BUFFER_TOKENS = 13,000
 ```
 
-For a model with 200K context window + 16K max output, the threshold is approximately **171,000 tokens** (approximately 85.5% utilization). Can be overridden by percentage via the `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` environment variable.
+For a 200K context window, the actual threshold depends on `reservedTokensForSummary`:
+
+| Scenario | reservedTokensForSummary | effectiveWindow | autoCompactThreshold | Relative to Total Window |
+|----------|-------------------------|-----------------|---------------------|--------------------------|
+| slot-cap on (max_output=8K) | min(8K, 20K) = **8K** | 192,000 | **179,000** | ~89.5% |
+| slot-cap off (max_output≥20K) | min(≥20K, 20K) = **20K** | 180,000 | **167,000** | ~83.5% |
+
+Can be overridden by percentage via the `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` environment variable.
 
 **Compression prompt design** (`src/services/compact/prompt.ts`):
 
@@ -707,7 +744,7 @@ IMPORTANT: this context may or may not be relevant to your tasks.
 })
 ```
 
-**2. Attachment messages**: Memory prefetch results, lazy tool lists (Tool Search discovery results), skill lists, Agent definition lists, etc., are all injected as attachment messages with content wrapped in `<system-reminder>`.
+**2. Attachment messages**: Memory prefetch results (see [3.8 Memory Prefetch](#38-memory-prefetch)), lazy tool lists (Tool Search discovery results), skill lists, Agent definition lists, etc., are all injected as attachment messages with content wrapped in `<system-reminder>`.
 
 **3. Reminders in tool results**: Some tools include system reminders when returning results. For example:
 - When file reading finds the file is empty: `Warning: file exists but is empty`
@@ -763,14 +800,14 @@ tryReactiveCompact() {
 }
 ```
 
-During normal operation, autocompact should proactively trigger at ~87% utilization, preventing PTL errors from occurring. Reactive compression is only needed in the following situations:
+During normal operation, autocompact should proactively trigger when context utilization reaches the threshold (approximately 83%~90% of total window, depending on the model's `reservedTokensForSummary`), preventing PTL errors from occurring. Reactive compression is only needed in the following situations:
 - Autocompact is disabled or skipped
 - A single tool result is unusually large, jumping past the autocompact threshold in one step
-- Context Collapse drainage didn't free enough tokens
+- [Context Collapse](#level-4-context-collapse) drainage didn't free enough tokens
 
 > **Design Decision: How are compression thresholds determined?**
 >
-> The auto-compression trigger formula is `tokens >= effectiveContextWindow - AUTOCOMPACT_BUFFER_TOKENS`, where `AUTOCOMPACT_BUFFER_TOKENS = 13,000` (`src/services/compact/autoCompact.ts`). For a 200K context window, this means triggering at approximately **93.5%** utilization. Why 13K? Because compression itself needs reserved output space — `MAX_OUTPUT_TOKENS_FOR_SUMMARY = 20,000` (based on p99.99 compression summary output of 17,387 tokens). The 13K buffer ensures there's still enough space to complete the current tool execution and generate the summary when compression triggers. Related to this is `WARNING_THRESHOLD_BUFFER_TOKENS = 20,000` — warnings start appearing to the user 7K tokens before compression.
+> The auto-compression trigger formula is `tokens >= effectiveContextWindow - AUTOCOMPACT_BUFFER_TOKENS`, where `AUTOCOMPACT_BUFFER_TOKENS = 13,000` (`src/services/compact/autoCompact.ts`). `effectiveContextWindow` itself = `contextWindow - Math.min(getMaxOutputTokensForModel(model), 20_000)`, i.e., it deducts the output reservation for compression summaries (`MAX_OUTPUT_TOKENS_FOR_SUMMARY = 20,000`, based on p99.99 compression summary output of 17,387 tokens). For a 200K context window, the threshold is approximately **92.8%** relative to effectiveWindow (167K/180K), and approximately **83.5%~89.5%** relative to total window (depending on whether `reservedTokensForSummary` is 20K or 8K). The 13K buffer ensures there's still enough space to complete the current tool execution and generate the summary when compression triggers. Related to this is `WARNING_THRESHOLD_BUFFER_TOKENS = 20,000` — warnings start appearing to the user 7K tokens before compression.
 
 > **Design Decision: Why does max_output_tokens default to only 8K instead of 32K?**
 >

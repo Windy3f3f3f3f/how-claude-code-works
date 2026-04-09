@@ -1,6 +1,16 @@
-# Chapter 13: User Experience Design
+# Chapter 12: User Experience Design
 
 > Good usability = Model capability × Interaction design × Engineering constraints
+
+### Chapter Overview
+
+This chapter covers the complete technology stack of Claude Code's terminal UI. The content is organized around three core layers:
+
+- **Rendering Engine** (12.2): Custom-built Ink/React terminal renderer, including Yoga layout, Screen Buffer diff, and object pool memory optimization
+- **Data Flow** (12.3): `Stream<T>` + `async function*` streaming pipeline from API SSE to terminal rendering, plus `StreamingMarkdown` incremental parsing
+- **Interaction Layer** (12.4–12.8): Tool call transparency, automatic error recovery, keyboard shortcuts, Vim mode, REPL main interface (virtual scrolling, permission anti-misclick, session recovery)
+
+Additionally covered: terminal protocol support (12.9), diagnostics interface (12.10), cost tracking (12.11), search and text selection (12.12). Finally, 12.13 distills design insights.
 
 ## 12.1 Design Philosophy
 
@@ -11,7 +21,7 @@ Give the Agent too much autonomy, and users feel uneasy — "What files did it m
 Claude Code found a precise balance point between the two: **Observable Autonomy**. The Agent acts freely, but lets users see every step in real time:
 
 - **Real-time visibility**: All tool calls are displayed via streaming. This isn't "wait until it's done, then show you the result," but rather "you can see parameters and progress during execution." The benefit is that users can press Ctrl+C to interrupt within the **first 3 seconds** of the Agent going in the wrong direction, instead of waiting 20 seconds for execution to finish before undoing — the cost of interruption is far lower than the cost of undoing.
-- **Minimize interruptions**: Only interrupt user flow when permission confirmation is truly needed. Permission dialogs even have a 200ms anti-misclick delay (detailed in Section 11.8), showing how seriously the team takes "the cost of interruption."
+- **Minimize interruptions**: Only interrupt user flow when permission confirmation is truly needed. Permission dialogs even have a 200ms anti-misclick delay (detailed in Section 12.8), showing how seriously the team takes "the cost of interruption."
 - **Streaming output supports decision-making**: Users judge whether the direction is correct while watching streaming output. If they notice the wrong direction after 3 seconds of model output, an immediate Ctrl+C saves the remaining 15 seconds of generation time and Token cost.
 
 This philosophy can be summarized in one sentence: **Trust but verify in real time** — give the Agent full freedom of action, but make every operation a glass box, not a black box.
@@ -349,7 +359,7 @@ The `renderGroupedToolUse?()` method supports merging multiple tool calls of the
 | Successfully completed | Green | Static | Completed |
 | Error | Red | Static | Execution failed |
 
-When multiple tools execute in parallel, all "executing" ToolUseLoader dots **blink in sync** — they light up or go dark at the same instant. This isn't achieved by a "blink coordinator" but leverages the mathematical synchronization of the `useBlink` Hook (detailed in Section 11.2). Synchronized blinking gives users a sense of "the system operating in unison," which feels more orderly than each blinking independently.
+When multiple tools execute in parallel, all "executing" ToolUseLoader dots **blink in sync** — they light up or go dark at the same instant. This isn't achieved by a "blink coordinator" but leverages the mathematical synchronization of the `useBlink` Hook (detailed in Section 12.2). Synchronized blinking gives users a sense of "the system operating in unison," which feels more orderly than each blinking independently.
 
 The source code also contains an interesting comment revealing an ANSI rendering pitfall: chalk library's `</dim>` and `</bold>` both reset via `\x1b[22m]`, which means when a dim element immediately precedes a bold element, bold gets unexpectedly rendered as dim. ToolUseLoader deliberately places the dot and tool name in separate `<Text>` elements with a `<Box>` spacer between them to work around this issue.
 
@@ -678,29 +688,17 @@ This means that even if Claude Code crashes, the terminal closes unexpectedly, o
 
 ## 12.9 Terminal Protocol Support
 
-`src/ink/termio/` handles low-level terminal protocols, supporting multiple advanced features:
+`src/ink/termio/` handles low-level terminal protocols, supporting multiple advanced features. The following table categorizes by protocol module, listing the protocol standard, provided terminal feature, and description for each:
 
-| Feature | Protocol | Description |
-|------|------|------|
-| Hyperlinks | OSC 8 | Clickable links |
-| Mouse tracking | Mode-1003/1000 | Move/click events |
-| Keyboard | Kitty Protocol | Extended key codes |
-| Text selection | Custom | Word/line snapping |
-| Search highlighting | Custom | With position tracking |
-| Bidirectional text | bidi.ts | RTL language support |
-| Hit testing | Hit Testing | Precise element targeting |
-
-### Low-Level I/O Modules
-
-Terminal protocol support is composed of multiple specialized modules, each handling specific terminal protocol standards:
-
-| Module | Protocol | Function |
-|------|------|------|
-| ANSI Parser | CSI, DEC, OSC | Parses terminal escape sequences into structured events |
-| SGR | Select Graphic Rendition | Colors (256-color + TrueColor), bold, italic, underline, and other styles |
-| CSI | Control Sequence Introducer | Cursor movement, region erasure, extended key codes (Kitty Protocol) |
-| OSC | Operating System Command | Hyperlinks (OSC 8), clipboard access (OSC 52), title setting |
-| bidi.ts | Unicode Bidirectional | RTL language support (correct rendering of Arabic, Hebrew text) |
+| Module | Protocol Standard | Feature | Description |
+|------|------|------|------|
+| ANSI Parser | CSI, DEC, OSC | Event parsing | Parses terminal escape sequences into structured keystroke/mouse/focus events |
+| SGR | Select Graphic Rendition | Style rendering | Colors (256-color + TrueColor), bold, italic, underline |
+| CSI | Control Sequence Introducer | Keyboard + Mouse tracking | Extended key codes (Kitty Protocol), cursor movement, mouse events (Mode-1003/1000) |
+| OSC | Operating System Command | Hyperlinks + Clipboard | Clickable links (OSC 8), clipboard access (OSC 52), title setting |
+| bidi.ts | Unicode Bidirectional | Bidirectional text | RTL language support (correct rendering of Arabic, Hebrew text) |
+| Hit Testing | Custom | Hit testing + Text selection | Mouse coordinates → Screen Buffer cell → precise element targeting, supports word/line snapping |
+| Search | Custom | Search highlighting | Incremental matching + position tracking, current focus match always visible |
 
 The complete data flow path is:
 

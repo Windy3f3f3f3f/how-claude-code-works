@@ -134,7 +134,7 @@ Each skill description also has a hard cap: `MAX_LISTING_DESC_CHARS = 250` chara
 
 ### whenToUse: Guiding Model Auto-Triggering
 
-The `whenToUse` field is the key to skills being automatically discovered by the model. It appears in the skill listing, and the model uses it to judge "does the current scenario warrant calling this skill."
+The `whenToUse` field is the key to skills being automatically triggered by the model. It appears in the skill listing, and the model uses it to judge "does the current scenario warrant calling this skill."
 
 Bundled skills showcase an excellent writing pattern — **positive triggers + negative exclusions**:
 
@@ -149,6 +149,18 @@ Good `whenToUse` should:
 - **Describe user intent, not user wording**: "When the user needs to review code quality" is better than "When the user says review"
 - **Include negative conditions**: Helps the model distinguish similar scenarios and reduce false triggers
 - **Be specific rather than vague**: "When the user has modified multiple files and wants to check before committing" is better than "When the user needs help"
+
+To illustrate these principles with counter-examples:
+
+```
+❌ Bad examples:
+- "When the user says /review" (describes wording, not intent — the user might say "help me check the code")
+- "Any time the user needs help" (too vague, matches almost every scenario, causing frequent false triggers)
+- "When the user wants to use this skill" (circular definition, the model cannot determine when to trigger from this)
+
+✅ Good example:
+- "When the user has modified multiple files and wants to check code quality before committing"
+```
 
 Note that these trigger instructions are **documentary** — the model judges on its own based on the descriptions, not automatic triggers. The model may miss or misjudge, but this is a pragmatic design: compared to building a complex rules engine, having the model understand natural language descriptions is already good enough.
 
@@ -188,7 +200,9 @@ A few notable field designs:
 
 ### Prompt Substitution Pipeline
 
-Skill content undergoes multiple layers of substitution at execution time (`getPromptForCommand()`), each solving a specific problem:
+Skill prompts are not used as raw Markdown content at execution time. Instead, they go through a multi-stage preprocessing pipeline: path resolution, argument binding, environment variable injection, and dynamic shell command execution. Each layer solves a specific problem, and the final prompt sent to the model is produced only after all layers are applied. This design allows skills to be defined and version-controlled as static Markdown files while dynamically adapting to the current project path, user arguments, and environment context at runtime.
+
+The complete substitution flow (`getPromptForCommand()`) is as follows:
 
 ```mermaid
 flowchart TD
@@ -458,7 +472,7 @@ POST_COMPACT_MAX_TOKENS_PER_SKILL = 5,000  Per-skill cap
 ```
 
 Allocation strategy:
-- Sorted by **most recently invoked first** — most recently used skills are most likely still relevant
+- Sorted by **`invokedAt` timestamp in descending order** (`b.invokedAt - a.invokedAt`, most recently invoked first) — most recently used skills are most likely still relevant
 - When exceeding the per-skill cap, **head is preserved, tail is truncated** — because skill setup instructions and usage guidelines are typically at the beginning
 - When exceeding total budget, least active skills are discarded
 

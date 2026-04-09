@@ -46,7 +46,7 @@ Why split into two layers? Because **session management and query execution have
 
 ## 2.3 QueryEngine: Session Lifecycle Management
 
-`src/QueryEngine.ts` (1,155 lines) is the outer shell of a conversation. Its core method `submitMessage()` drives a complete user interaction.
+`src/QueryEngine.ts` (1,295 lines) is the outer shell of a conversation. Its core method `submitMessage()` drives a complete user interaction.
 
 ### Full Configuration Parameters
 
@@ -134,7 +134,7 @@ flowchart TD
 
 ## 2.4 query(): Implementation of the Core Loop
 
-`src/query.ts` (1,728 lines) is Claude Code's most complex single module, implementing a **state-machine-based async generator loop**.
+`src/query.ts` (1,729 lines) is Claude Code's most complex single module, implementing a **state-machine-based async generator loop**.
 
 ### Core Signature
 
@@ -254,7 +254,7 @@ The injection order of context matters for prompt caching: the system prompt (re
 
 **Step 3: Streaming Call + Parallel Tool Execution**
 
-`callModel()` returns an async generator, and `StreamingToolExecutor` begins executing completed tool calls while still receiving the streaming response (see Section 2.5 for details).
+`callModel()` returns an async generator, and `StreamingToolExecutor` begins executing completed tool calls while still receiving the streaming response (see Section 2.4.1 for details).
 
 **Step 4: Memory Prefetch Consumption**
 
@@ -267,9 +267,9 @@ using pendingMemoryPrefetch = startRelevantMemoryPrefetch(
 
 `using` is TypeScript's Explicit Resource Management syntax — when the generator exits (whether through normal return or exception), `pendingMemoryPrefetch`'s `[Symbol.dispose]()` is automatically called, used for sending telemetry and cleaning up resources. Memory prefetch runs in parallel during model streaming generation, with a `settledAt` guard ensuring it is consumed only once per turn.
 
-## 2.5 Streaming Processing and Parallel Tool Execution
+### 2.4.1 Streaming Processing and Parallel Tool Execution
 
-Claude Code's streaming processing is not a simple "wait for API to return, then display". It uses `StreamingToolExecutor` to implement **streaming parallel tool execution**:
+Claude Code's streaming processing is not a simple "wait for API to return, then display". It uses `StreamingToolExecutor` to implement **streaming parallel tool execution** — while the model is still generating subsequent tokens, tool calls that have finished parsing are immediately dispatched for execution. This is a key optimization within the query() loop.
 
 ```
                     API Streaming Output
@@ -293,36 +293,87 @@ Claude Code's streaming processing is not a simple "wait for API to return, then
                         [==Results immediately available==]
 ```
 
-### StreamingToolExecutor Implementation
+#### StreamingToolExecutor Implementation
 
-The core logic of `StreamingToolExecutor` (`src/services/tools/StreamingToolExecutor.ts`):
+The core of `StreamingToolExecutor` (`src/services/tools/StreamingToolExecutor.ts`, 531 lines) is a concurrency-controlled tool execution queue. Each tool is tracked through four states: `queued → executing → completed → yielded`:
 
-1. **`addToolUseBlock(block)`**: Called when the API streaming response has parsed a complete `tool_use` JSON block. Note that it's a "complete block" — it doesn't need to wait for the entire API response to finish; execution can be dispatched as soon as a single tool_use block's JSON parsing is complete
-2. **Internal execution**: Each block is immediately submitted to `runTools()` for execution. Permission checks, input validation, and tool invocation all happen at this point
-3. **`getCompletedResults()`**: Called after the API streaming response ends, collecting all completed tool execution results. Since tools have already started executing during streaming, most results are already ready at this point
+```typescript
+// src/services/tools/StreamingToolExecutor.ts — Core scheduling logic
+
+type ToolStatus = 'queued' | 'executing' | 'completed' | 'yielded'
+
+// 1. As each tool_use block finishes parsing in the streaming response, enqueue and try to execute
+addTool(block: ToolUseBlock, assistantMessage: AssistantMessage): void {
+  const isConcurrencySafe = toolDefinition.isConcurrencySafe(parsedInput.data)
+  this.tools.push({ id: block.id, block, status: 'queued', isConcurrencySafe, ... })
+  void this.processQueue()  // Immediately try to schedule
+}
+
+// 2. Concurrency control: concurrent-safe tools run in parallel, non-concurrent tools run exclusively
+private canExecuteTool(isConcurrencySafe: boolean): boolean {
+  const executingTools = this.tools.filter(t => t.status === 'executing')
+  return executingTools.length === 0 ||
+    (isConcurrencySafe && executingTools.every(t => t.isConcurrencySafe))
+}
+
+// 3. After streaming ends, harvest all completed results (most are already ready by now)
+*getCompletedResults(): Generator<MessageUpdate, void> {
+  for (const tool of this.tools) {
+    if (tool.status === 'completed' && tool.results) {
+      tool.status = 'yielded'
+      for (const message of tool.results) yield { message, newContext: ... }
+    }
+  }
+}
+```
+
+Key design details:
+
+1. **`addTool(block)`**: Called when the API streaming response has parsed a complete `tool_use` JSON block. Note that it's a "complete block" — it doesn't need to wait for the entire API response to finish; execution can be dispatched as soon as a single tool_use block's JSON parsing is complete
+2. **Concurrency safety classification**: Each tool declares whether it can run in parallel via `isConcurrencySafe`. Read-only operations like file reads and searches are marked concurrent-safe and can execute simultaneously; file writes and Bash commands are marked non-concurrent and must execute exclusively
+3. **Bash error cascading**: When a Bash tool errors, `siblingAbortController` cancels all sibling tools executing in parallel — because Bash commands often have implicit dependencies (e.g., if `mkdir` fails, subsequent commands are meaningless), but failures in independent operations like file reads/searches do not trigger cascading
+4. **`getCompletedResults()` + `getRemainingResults()`**: The former non-blockingly harvests completed results, the latter asynchronously waits for remaining in-flight tools. Together they implement a pattern of "instant harvesting during streaming + tail-waiting after streaming ends"
 
 The effect of this design is: during a typical API response (5-30 second streaming window), multiple tools can be dispatched and completed. By the time streaming ends, tool results are already available — eliminating the serial execution bottleneck.
 
 ## 2.6 Feature Flag Conditional Loading
 
-At the beginning of `query.ts`, 4 Feature Flags are used for conditional module loading:
+`query.ts` uses **6** Feature Flags for conditional module loading, spread across three `eslint-disable` blocks at the top of the file. The first 4 are closely related to context compaction and the tool system, and are core to understanding the main loop; the latter 2 (`jobClassifier`, `taskSummaryModule`) serve template classification and background session summaries respectively, and are auxiliary features.
 
 ```typescript
-import { feature } from 'bun:bundle'
-
+// —— Group 1: Context compaction related ——
 const reactiveCompact = feature('REACTIVE_COMPACT')
   ? (require('./services/compact/reactiveCompact.js') as typeof import('./services/compact/reactiveCompact.js'))
   : null
 const contextCollapse = feature('CONTEXT_COLLAPSE')
   ? (require('./services/contextCollapse/index.js') as typeof import('./services/contextCollapse/index.js'))
   : null
-const snipModule = feature('HISTORY_SNIP')
-  ? (require('./services/compact/snipCompact.js') as typeof import('./services/compact/snipCompact.js'))
-  : null
+
+// —— Group 2: Skill search & template classification ——
 const skillPrefetch = feature('EXPERIMENTAL_SKILL_SEARCH')
   ? (require('./services/skillSearch/prefetch.js') as typeof import('./services/skillSearch/prefetch.js'))
   : null
+const jobClassifier = feature('TEMPLATES')
+  ? (require('./jobs/classifier.js') as typeof import('./jobs/classifier.js'))
+  : null
+
+// —— Group 3: History snipping & background session summaries ——
+const snipModule = feature('HISTORY_SNIP')
+  ? (require('./services/compact/snipCompact.js') as typeof import('./services/compact/snipCompact.js'))
+  : null
+const taskSummaryModule = feature('BG_SESSIONS')
+  ? (require('./utils/taskSummary.js') as typeof import('./utils/taskSummary.js'))
+  : null
 ```
+
+| Feature Flag | Variable | Purpose |
+|---|---|---|
+| `REACTIVE_COMPACT` | `reactiveCompact` | Reactive full compaction on PTL errors |
+| `CONTEXT_COLLAPSE` | `contextCollapse` | Projection-style context collapse |
+| `EXPERIMENTAL_SKILL_SEARCH` | `skillPrefetch` | Skill search prefetch |
+| `TEMPLATES` | `jobClassifier` | Task template classifier |
+| `HISTORY_SNIP` | `snipModule` | History message snip trimming |
+| `BG_SESSIONS` | `taskSummaryModule` | Background session task summary generation |
 
 This pattern operates on three levels:
 1. **Compile-time elimination**: `feature()` is evaluated at Bun bundler build time. In external builds, `feature('REACTIVE_COMPACT')` returns `false`, and the entire `require()` branch is tree-shaken
