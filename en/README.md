@@ -175,6 +175,20 @@ To prevent conflicts from multiple Agents modifying the same file simultaneously
 **Concerned about security?**
 → Read [Permissions & Security](/en/docs/11-permission-security.md) + [Code Editing Strategy](/en/docs/05-code-editing-strategy.md)
 
+## Changelog
+
+| Date | Changes |
+|------|---------|
+| 2026-04-09 | Comprehensive review and fix of all 13 chapters: corrected inaccurate numbers/references (line counts, percentages, event counts, chapter numbering), added high-level overviews to chapters that lacked them, restructured sections for better readability (ch05 split/swap, ch08 reorder/merge), synchronized Chinese and English versions |
+| 2026-04-03 | Added Chapter 14: System Prompt Design Philosophy, in-depth analysis of prompt content design principles and engineering practices |
+| 2026-04-03 | Added dark mode, reading progress bar, back-to-top button, context-aware language switching, and other UI improvements |
+| 2026-04-03 | Completed English translations for all 13 documents, supporting bilingual Chinese-English switching |
+| 2026-04-01 | Split Memory & Skills into separate chapters (11→12 articles), renumbered 01-12 by sidebar grouping |
+| 2026-04-01 | Major expansion of all 12 chapters (doubled in length), added source-level implementation details, Mermaid architecture diagrams, and code examples |
+| 2026-03-31 | Added 3 chapters: Hooks & Extensibility, Multi-Agent Architecture, Memory & Skills System |
+| 2026-03-31 | Launched Docsify documentation site with search, Mermaid rendering, and chapter navigation |
+| 2026-03-31 | Initial release: 8 core architecture analysis documents |
+
 ## License
 
 MIT
