@@ -14,6 +14,7 @@
   - [8. 记忆系统](/docs/08-memory-system.md)
   - [9. 技能系统](/docs/09-skills-system.md)
   - [10. Plan 模式](/docs/10-plan-mode.md)
+  - [15. 任务管理系统](/docs/15-task-system.md)
 
 - **基础设施**
   - [11. 权限与安全](/docs/11-permission-security.md)

@@ -20,7 +20,7 @@ Claude Code is the most widely used AI coding agent today. It understands entire
 
 Anthropic open-sourced this codebase. **But where do you even start with 500K lines of code?**
 
-This project is the answer. We've distilled **13 topic-specific documents** (338K characters total) covering every critical design decision, from the core agent loop to the security architecture. Whether you want to build your own AI agent or deeply understand how Claude Code works, this is the shortest path.
+This project is the answer. We've distilled **14 topic-specific documents** (338K characters total) covering every critical design decision, from the core agent loop to the security architecture. Whether you want to build your own AI agent or deeply understand how Claude Code works, this is the shortest path.
 
 ## System Architecture
 
@@ -148,6 +148,8 @@ To prevent conflicts from multiple agents editing the same files, the system use
 | 11 | [Permission & Security](./docs/11-permission-security.md) | The complete 5-layer security system, 23 Bash security checks |
 | 12 | [User Experience](./docs/12-user-experience.md) | Why React for terminal UI, streaming output implementation, terminal interaction details |
 | 13 | [Minimal Components](./docs/13-minimal-components.md) | The minimum modules needed for a coding agent, the evolution path from 500 lines to 500K |
+| 14 | [System Prompt Design](./docs/14-system-prompt-design.md) | 7-layer progressive prompt architecture, anti-pattern inoculation, blast radius risk framework, 7 agent prompt design principles |
+| 15 | [Task Management System](./docs/15-task-system.md) | File-level storage with concurrency locking, 3-layer change detection, dependency tracking and atomic claiming, multi-agent task coordination, verification nudge |
 
 ## Who should read this?
 

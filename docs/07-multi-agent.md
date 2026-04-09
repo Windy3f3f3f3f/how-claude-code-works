@@ -285,7 +285,7 @@ flowchart TD
 **第三层的例外**：
 - **MCP 工具**（名称以 `mcp__` 开头）始终放行——它们由用户配置的外部服务提供，用户对其安全性负责
 - **ExitPlanMode**：当 `permissionMode === 'plan'` 时允许——进程内队友需要退出 Plan 模式的能力
-- **进程内队友**：获得额外的 Agent 工具（可以派生同步子 Agent）和任务协调工具（TaskCreate/TaskGet/TaskList/TaskUpdate/SendMessage）——这些工具使队友能够协调共享任务列表和互相通信
+- **进程内队友**：获得额外的 Agent 工具（可以派生同步子 Agent）和任务协调工具（TaskCreate/TaskGet/TaskList/TaskUpdate/SendMessage）——这些工具使队友能够协调共享任务列表和互相通信（任务系统的完整分析见 [第 15 章](15-task-system.md)）
 
 **第四层**：Agent 自身定义的 `disallowedTools`。例如 Explore Agent 显式排除 `[Agent, ExitPlanMode, FileEdit, FileWrite, NotebookEdit]`。
 

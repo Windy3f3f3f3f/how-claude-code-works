@@ -8,7 +8,7 @@
 [![GitHub forks](https://img.shields.io/github/forks/Windy3f3f3f3f/how-claude-code-works?style=flat-square&logo=github)](https://github.com/Windy3f3f3f3f/how-claude-code-works/fork)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](./LICENSE)
 [![TypeScript](https://img.shields.io/badge/Source-TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://github.com/anthropics/claude-code)
-[![Docs](https://img.shields.io/badge/Docs-12_chapters-orange?style=flat-square)](#专题深入)
+[![Docs](https://img.shields.io/badge/Docs-15_chapters-orange?style=flat-square)](#专题深入)
 
 <br/>
 
@@ -30,7 +30,7 @@ Anthropic 开源（x）了这份源码。**但 50 万行代码，从哪里开始
 
 这也是我们创建这个项目的初衷——我们都遇到了没有办法阅读这么庞大代码项目的问题，解决方案是和 Claude Code 一起读，让它写文档配合我们理解源代码。在此同时，我们想把这个过程文档化，就形成了这个项目。
 
-我们和 Claude Code 加班从源码中提炼出 **14 篇专题文档**，覆盖了从核心循环到安全防护的每一个关键设计决策。不管你是想造自己的 AI Agent，还是想更深入地理解和使用 Claude Code，这里都是最短路径（应该？就算不是最短的，我们也会不断更新这个项目）。
+我们和 Claude Code 加班从源码中提炼出 **15 篇专题文档**，覆盖了从核心循环到安全防护的每一个关键设计决策。不管你是想造自己的 AI Agent，还是想更深入地理解和使用 Claude Code，这里都是最短路径（应该？就算不是最短的，我们也会不断更新这个项目）。
 
 <div align="center">
   <img alt="在线阅读文档网站截图" src="./assets/architecture.png" width="800" />
@@ -155,6 +155,7 @@ Claude Code 支持三种多 Agent 模式：
 | 12 | [用户体验设计](./docs/12-user-experience.md) | 自研 Ink 渲染器架构、Yoga Flexbox 布局、虚拟滚动与对象池优化、Vim 模式 |
 | 13 | [最小必要组件](./docs/13-minimal-components.md) | 7 个最小必要组件框架、最小实现 vs 生产级实现的逐项对照、从 500 行到 50 万行的演进路线 |
 | 14 | [系统提示词设计](./docs/14-system-prompt-design.md) | 7 层递进式提示词架构、反模式接种与负面清单设计、爆炸半径风险框架、内外分层变体、7 条 Agent 提示词设计原则 |
+| 15 | [任务管理系统](./docs/15-task-system.md) | 文件级存储与并发锁设计、三层变更检测、依赖追踪与原子认领、多 Agent 任务协调、验证提醒机制 |
 
 ## 🎯 谁应该读这个？
 

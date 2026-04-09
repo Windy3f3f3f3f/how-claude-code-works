@@ -285,7 +285,7 @@ flowchart TD
 **Layer 3 exceptions**:
 - **MCP tools** (names starting with `mcp__`) always pass through — they are provided by user-configured external services, and the user is responsible for their security
 - **ExitPlanMode**: Allowed when `permissionMode === 'plan'` — in-process teammates need the ability to exit Plan mode
-- **In-process teammates**: Gain additional Agent tools (can spawn synchronous sub-Agents) and task coordination tools (TaskCreate/TaskGet/TaskList/TaskUpdate/SendMessage) — these tools enable teammates to coordinate shared task lists and communicate with each other
+- **In-process teammates**: Gain additional Agent tools (can spawn synchronous sub-Agents) and task coordination tools (TaskCreate/TaskGet/TaskList/TaskUpdate/SendMessage) — these tools enable teammates to coordinate shared task lists and communicate with each other (for a complete analysis of the task system, see [Chapter 15](15-task-system.md))
 
 **Layer 4**: The Agent's own defined `disallowedTools`. For example, the Explore Agent explicitly excludes `[Agent, ExitPlanMode, FileEdit, FileWrite, NotebookEdit]`.
 

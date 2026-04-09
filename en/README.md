@@ -6,7 +6,7 @@
 [![GitHub forks](https://img.shields.io/github/forks/Windy3f3f3f3f/how-claude-code-works?style=flat-square&logo=github)](https://github.com/Windy3f3f3f3f/how-claude-code-works/fork)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](./LICENSE)
 [![TypeScript](https://img.shields.io/badge/Source-TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://github.com/anthropics/claude-code)
-[![Docs](https://img.shields.io/badge/Docs-13_chapters-orange?style=flat-square)](#deep-dive-topics)
+[![Docs](https://img.shields.io/badge/Docs-15_chapters-orange?style=flat-square)](#deep-dive-topics)
 
 > Want to build one yourself? Check out the companion project **[Claude Code From Scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch)** — ~3000 lines of TypeScript, 11 step-by-step tutorial chapters, build your own Claude Code from scratch
 
@@ -18,7 +18,7 @@ Anthropic open-sourced (sort of) this source code. **But with 500,000 lines of c
 
 This is why we created this project. We both faced the same problem of not being able to read such a massive codebase, and our solution was to read it together with Claude Code, having it write documentation to help us understand the source code. At the same time, we wanted to document this process, which resulted in this project.
 
-Together with Claude Code, working overtime, we distilled **13 topic-specific documents** from the source code, covering every key design decision from the core loop to security defenses. Whether you want to build your own AI Agent or want to understand and use Claude Code more deeply, this is the shortest path (probably? Even if it's not the shortest, we'll keep updating this project).
+Together with Claude Code, working overtime, we distilled **15 topic-specific documents** from the source code, covering every key design decision from the core loop to security defenses. Whether you want to build your own AI Agent or want to understand and use Claude Code more deeply, this is the shortest path (probably? Even if it's not the shortest, we'll keep updating this project).
 
 ## System Architecture
 
@@ -138,6 +138,8 @@ To prevent conflicts from multiple Agents modifying the same file simultaneously
 | 11 | [Permissions & Security](/en/docs/11-permission-security.md) | 5-layer defense-in-depth system, tree-sitter AST analysis + 23 security checks, race confirmation mechanism and 200ms anti-misclick |
 | 12 | [User Experience Design](/en/docs/12-user-experience.md) | Custom Ink renderer architecture, Yoga Flexbox layout, virtual scrolling and object pool optimization, Vim mode |
 | 13 | [Minimal Essential Components](/en/docs/13-minimal-components.md) | 7 minimal essential component framework, item-by-item comparison of minimal vs production implementation, evolution path from 500 lines to 500,000 lines |
+| 14 | [System Prompt Design](/en/docs/14-system-prompt-design.md) | 7-layer progressive prompt architecture, anti-pattern inoculation, blast radius risk framework, 7 agent prompt design principles |
+| 15 | [Task Management System](/en/docs/15-task-system.md) | File-level storage with concurrency locking, 3-layer change detection, dependency tracking and atomic claiming, multi-agent task coordination, verification nudge |
 
 ## Who Should Read This?
 

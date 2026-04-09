@@ -14,6 +14,7 @@
   - [8. Memory System](/en/docs/08-memory-system.md)
   - [9. Skills System](/en/docs/09-skills-system.md)
   - [10. Plan Mode](/en/docs/10-plan-mode.md)
+  - [15. Task Management System](/en/docs/15-task-system.md)
 
 - **Infrastructure**
   - [11. Permissions & Security](/en/docs/11-permission-security.md)
