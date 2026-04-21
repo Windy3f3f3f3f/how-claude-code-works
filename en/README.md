@@ -129,17 +129,17 @@ To prevent conflicts from multiple Agents modifying the same file simultaneously
 | 2 | [Agent Loop](/en/docs/02-agent-loop.md) | Dual-layer architecture of the Agent loop, 7 Continue Sites for failure recovery, tool pre-execution, StreamingToolExecutor concurrency mechanism |
 | 3 | [Context Engineering](/en/docs/03-context-engineering.md) | Complete details of the 4-level compression pipeline, post-compression auto-recovery mechanism (5 files + skill reactivation), prompt caching strategy and cache break detection |
 | 4 | [Tool System](/en/docs/04-tool-system.md) | Registration and concurrency control for 66 tools, detailed MCP 7 transport types, connection state machine, OAuth 2.0 + PKCE authentication flow |
-| 5 | [Code Editing Strategy](/en/docs/05-code-editing-strategy.md) | Why search-and-replace is better than full file rewrite, uniqueness constraints and anti-hallucination design, code-level implementation of mandatory pre-edit reading |
-| 6 | [Hooks & Extensibility](/en/docs/06-hooks-extensibility.md) | Complete 23+ Hook events panorama, 5 Hook types, 6-stage execution pipeline, PermissionRequest 4 capabilities, trust model and security |
-| 7 | [Multi-Agent Architecture](/en/docs/07-multi-agent.md) | Sub-Agent 4 execution modes and Worktree isolation, coordinator pure orchestration design, Swarm 3 execution backends and mailbox communication |
-| 8 | [Memory System](/en/docs/08-memory-system.md) | 4 memory types and closed taxonomy, Sonnet semantic recall and async prefetch, background memory extraction Agent, memory drift defense, team memory |
-| 9 | [Skills System](/en/docs/09-skills-system.md) | 6-layer skill sources and priority, lazy loading and token budget allocation, Inline/Fork dual execution modes, whitelist permission model, skill retention after compression |
-| 10 | [Plan Mode](/en/docs/10-plan-mode.md) | Two entry paths, 5-phase and iterative dual workflows, attachment throttling mechanism, Phase 4 four experimental variants, plan file management and recovery, approval and permission restoration |
-| 11 | [Permissions & Security](/en/docs/11-permission-security.md) | 5-layer defense-in-depth system, tree-sitter AST analysis + 23 security checks, race confirmation mechanism and 200ms anti-misclick |
-| 12 | [User Experience Design](/en/docs/12-user-experience.md) | Custom Ink renderer architecture, Yoga Flexbox layout, virtual scrolling and object pool optimization, Vim mode |
-| 13 | [Minimal Essential Components](/en/docs/13-minimal-components.md) | 7 minimal essential component framework, item-by-item comparison of minimal vs production implementation, evolution path from 500 lines to 500,000 lines |
-| 14 | [System Prompt Design](/en/docs/14-system-prompt-design.md) | 7-layer progressive prompt architecture, anti-pattern inoculation, blast radius risk framework, 7 agent prompt design principles |
-| 15 | [Task Management System](/en/docs/15-task-system.md) | File-level storage with concurrency locking, 3-layer change detection, dependency tracking and atomic claiming, multi-agent task coordination, verification nudge |
+| 5 | [Skills System](/en/docs/09-skills-system.md) | 6-layer skill sources and priority, lazy loading and token budget allocation, Inline/Fork dual execution modes, whitelist permission model, skill retention after compression |
+| 6 | [Memory System](/en/docs/08-memory-system.md) | 4 memory types and closed taxonomy, Sonnet semantic recall and async prefetch, background memory extraction Agent, memory drift defense, team memory |
+| 7 | [Hooks & Extensibility](/en/docs/06-hooks-extensibility.md) | Complete 23+ Hook events panorama, 5 Hook types, 6-stage execution pipeline, PermissionRequest 4 capabilities, trust model and security |
+| 8 | [Multi-Agent Architecture](/en/docs/07-multi-agent.md) | Sub-Agent 4 execution modes and Worktree isolation, coordinator pure orchestration design, Swarm 3 execution backends and mailbox communication |
+| 9 | [Plan Mode](/en/docs/10-plan-mode.md) | Two entry paths, 5-phase and iterative dual workflows, attachment throttling mechanism, Phase 4 four experimental variants, plan file management and recovery, approval and permission restoration |
+| 10 | [Code Editing Strategy](/en/docs/05-code-editing-strategy.md) | Why search-and-replace is better than full file rewrite, uniqueness constraints and anti-hallucination design, code-level implementation of mandatory pre-edit reading |
+| 11 | [Task Management System](/en/docs/15-task-system.md) | File-level storage with concurrency locking, 3-layer change detection, dependency tracking and atomic claiming, multi-agent task coordination, verification nudge |
+| 12 | [Permissions & Security](/en/docs/11-permission-security.md) | 5-layer defense-in-depth system, tree-sitter AST analysis + 23 security checks, race confirmation mechanism and 200ms anti-misclick |
+| 13 | [System Prompt Design](/en/docs/14-system-prompt-design.md) | 7-layer progressive prompt architecture, anti-pattern inoculation, blast radius risk framework, 7 agent prompt design principles |
+| 14 | [User Experience Design](/en/docs/12-user-experience.md) | Custom Ink renderer architecture, Yoga Flexbox layout, virtual scrolling and object pool optimization, Vim mode |
+| 15 | [Minimal Essential Components](/en/docs/13-minimal-components.md) | 7 minimal essential component framework, item-by-item comparison of minimal vs production implementation, evolution path from 500 lines to 500,000 lines |
 
 ## Who Should Read This?
 

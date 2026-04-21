@@ -207,7 +207,7 @@ Claude Code includes **66+ built-in tools**, organized into 7 categories by func
 | **Agent Management** | AgentTool | Spawn sub-Agents (core of multi-Agent architecture) |
 | | TaskOutputTool | Output task results |
 | | TaskStopTool | Stop background tasks |
-| | TaskCreate/Get/Update/ListTool | Task management v2 (see [Chapter 15](15-task-system.md)) |
+| | TaskCreate/Get/Update/ListTool | Task management v2 (see [Chapter 11](15-task-system.md)) |
 | | SendMessageTool | Inter-Agent communication |
 | **User Interaction** | AskUserQuestionTool | Ask users questions |
 | | TodoWriteTool | Manage to-do lists |

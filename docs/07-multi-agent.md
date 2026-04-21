@@ -1,8 +1,8 @@
-# 第 7 章：多 Agent 架构
+# 第 8 章：多 Agent 架构
 
 > 从单个 Agent 到 Agent 团队——Claude Code 如何协调多个 Agent 并行完成复杂任务。
 
-## 7.1 三种多 Agent 模式
+## 8.1 三种多 Agent 模式
 
 Claude Code 支持三种多 Agent 协作模式，适用于不同复杂度的场景：
 
@@ -53,7 +53,7 @@ graph TB
 - 需要执行前审批计划？ --> Plan 模式（可与上述任何模式组合）
 - 不确定？ --> 从子 Agent 模式开始，复杂度不够时再升级
 
-## 7.2 子 Agent 模式（AgentTool）
+## 8.2 子 Agent 模式（AgentTool）
 
 这是最基础的多 Agent 模式。父 Agent 通过 [AgentTool](./04-tool-system.md) 派生子 Agent 执行独立任务。
 
@@ -291,7 +291,7 @@ flowchart TD
 **第三层的例外**：
 - **MCP 工具**（名称以 `mcp__` 开头）始终放行——它们由用户配置的外部服务提供，用户对其安全性负责
 - **ExitPlanMode**：当 `permissionMode === 'plan'` 时允许——进程内队友需要退出 Plan 模式的能力
-- **进程内队友**：获得额外的 Agent 工具（可以派生同步子 Agent）和任务协调工具（TaskCreate/TaskGet/TaskList/TaskUpdate/SendMessage）——这些工具使队友能够协调共享任务列表和互相通信（任务系统的完整分析见 [第 15 章](15-task-system.md)）
+- **进程内队友**：获得额外的 Agent 工具（可以派生同步子 Agent）和任务协调工具（TaskCreate/TaskGet/TaskList/TaskUpdate/SendMessage）——这些工具使队友能够协调共享任务列表和互相通信（任务系统的完整分析见 [第 11 章](15-task-system.md)）
 
 **第四层**：Agent 自身定义的 `disallowedTools`。例如 Explore Agent 显式排除 `[Agent, ExitPlanMode, FileEdit, FileWrite, NotebookEdit]`。
 
@@ -579,7 +579,7 @@ export const FORK_AGENT = {
 
 **与协调器模式互斥**：Fork 和协调器不能同时启用——协调器有自己的 Worker 委托机制，fork 的"继承完整上下文"设计与协调器的"Worker 从零开始"哲学相矛盾。
 
-## 7.3 协调器模式（Coordinator）
+## 8.3 协调器模式（Coordinator）
 
 协调器模式（Feature-gated: `COORDINATOR_MODE`）将主 Agent 转变为**纯编排者**——只负责分析任务、分配 Worker、综合结果，永远不直接操作文件。
 
@@ -730,7 +730,7 @@ Agent({ prompt: "Fix the null pointer in src/auth/validate.ts:42.
 
 这是初学者最容易犯的错误——写出类似"请继续刚才的工作"的 prompt，但 Worker 根本不知道"刚才"是什么。
 
-## 7.4 Swarm 执行后端
+## 8.4 Swarm 执行后端
 
 Swarm 系统支持创建**命名 Agent 团队**，Agent 之间通过信箱对等通信。
 
@@ -849,7 +849,7 @@ Workers 可以在这个目录中自由读写文件（无需权限确认），用
 
 Scratchpad 提供了一个直接的旁路通道：Worker A 将详细发现写入文件，Worker B 直接读取——无需经过协调器的"理解和转述"。
 
-## 7.5 Worker 结果传递
+## 8.5 Worker 结果传递
 
 子 Agent / Worker 完成任务后，结果如何安全、可靠地回到父级？这涉及两条截然不同的返回路径、通知去重机制，以及针对 prompt injection 的安全分类。
 
@@ -943,7 +943,7 @@ When a worker reports failure:
 - If a correction attempt fails, try a different approach or report to the user
 ```
 
-## 7.6 Plan 模式：两阶段执行
+## 8.6 Plan 模式：两阶段执行
 
 Plan 模式在 Agent 的工具调用循环中插入了一个**审批关卡**——进入 Plan 模式后，系统级剥离写入权限，Agent 只能读取代码和撰写计划文件；用户审批计划后，权限恢复，Agent 按计划执行修改。
 
@@ -1052,7 +1052,7 @@ flowchart TD
 
 这不是建议，是硬约束——Plan 模式下写入工具的权限被系统级剥离，即使模型尝试调用也会被拒绝。
 
-## 7.7 设计洞察
+## 8.7 设计洞察
 
 1. **协调器不执行是核心约束**：防止协调器既做决策又做执行，保证任务分配的客观性。这也是为什么协调器的工具集被严格限制为 Agent + SendMessage + TaskStop。
 2. **"Never write based on your findings" 是最重要的提示词设计**：强制协调器综合理解研究结果，而非将理解委托给 Worker。这个约束将协调器从消息转发器提升为真正的智能编排者。
@@ -1069,4 +1069,4 @@ flowchart TD
 
 > **动手实践**：在 [claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch) 中，Agent 主循环（`src/agent.ts`）实现了基础的工具调用循环。尝试在此基础上增加一个简单的"plan 模式"——在执行工具前先收集所有计划的操作，让用户一次性审批。
 
-上一章：[Hooks 与可扩展性](./06-hooks-extensibility.md) | 下一章：[记忆系统](./08-memory-system.md)
+上一章：[Hooks 与可扩展性](./06-hooks-extensibility.md) | 下一章：[Plan 模式](./10-plan-mode.md)

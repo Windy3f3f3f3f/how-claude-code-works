@@ -15,11 +15,11 @@
 | **buildTool()** | A tool factory function that merges TOOL_DEFAULTS (fail-closed defaults) with tool definitions | [Section 4.1](/en/docs/04-tool-system.md#_41-tool-接口定义) |
 | **MCP** | Model Context Protocol, an external tool extension protocol supporting 7 transport mechanisms | [Section 4.9](/en/docs/04-tool-system.md#_49-mcp-工具集成) |
 | **ToolSearch** | A lazy-loading mechanism that loads only needed tools on demand from 50+, reducing prompt size per API call | [Section 4.10](/en/docs/04-tool-system.md#_410-工具搜索与延迟加载) |
-| **search-and-replace** | The editing strategy of FileEditTool, requiring old_string to match uniquely within the file | [Chapter 5](/en/docs/05-code-editing-strategy.md) |
-| **Defense in Depth** | 7 independent security check layers, where bypassing any single layer is not fatal | [Chapter 11](/en/docs/11-permission-security.md) |
-| **Plan Mode** | Two-phase execution: read-only exploration → user approval → writable implementation | [Section 7.6](/en/docs/07-multi-agent.md#_76-plan-模式两阶段执行) |
-| **Coordinator Mode** | The main Agent only orchestrates without executing, completing actual tasks through Workers | [Section 7.3](/en/docs/07-multi-agent.md#_73-协调器模式coordinator) |
-| **Hooks** | An event-driven extension mechanism that injects custom logic at key points in the tool execution lifecycle | [Chapter 6](/en/docs/06-hooks-extensibility.md) |
+| **search-and-replace** | The editing strategy of FileEditTool, requiring old_string to match uniquely within the file | [Chapter 10](/en/docs/05-code-editing-strategy.md) |
+| **Defense in Depth** | 7 independent security check layers, where bypassing any single layer is not fatal | [Chapter 12](/en/docs/11-permission-security.md) |
+| **Plan Mode** | Two-phase execution: read-only exploration → user approval → writable implementation | [Section 8.6](/en/docs/07-multi-agent.md#_86-plan-mode-two-phase-execution) |
+| **Coordinator Mode** | The main Agent only orchestrates without executing, completing actual tasks through Workers | [Section 8.3](/en/docs/07-multi-agent.md#_83-coordinator-mode) |
+| **Hooks** | An event-driven extension mechanism that injects custom logic at key points in the tool execution lifecycle | [Chapter 7](/en/docs/06-hooks-extensibility.md) |
 
 ## Common Tools List
 

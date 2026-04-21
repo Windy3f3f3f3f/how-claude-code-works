@@ -1,8 +1,8 @@
-# Chapter 8: Memory System
+# Chapter 6: Memory System
 
 > An Agent without memory treats every conversation as a first meeting — memory is what evolves Claude Code from a "stateless tool" into a "cross-session learning programming partner."
 
-## 8.1 Why Does an Agent Need Memory?
+## 6.1 Why Does an Agent Need Memory?
 
 Imagine this scenario: you collaborate with Claude Code on the same project for three consecutive days. On day one you tell it "don't summarize at the end of responses," on day two you say it again, and by day three you're getting frustrated — why can't it remember?
 
@@ -28,7 +28,7 @@ The two are complementary: CLAUDE.md stores "what the project is," memory stores
 
 Key files: `src/memdir/`
 
-## 8.2 Four Memory Types: Closed Taxonomy
+## 6.2 Four Memory Types: Closed Taxonomy
 
 The memory system uses a **closed four-type taxonomy**, where each type has clear responsibility boundaries and structural requirements:
 
@@ -121,7 +121,7 @@ flowchart TD
     Q3 -->|None of the above| Skip
 ```
 
-## 8.3 Storage Architecture
+## 6.3 Storage Architecture
 
 ### Directory Structure
 
@@ -195,7 +195,7 @@ autoMemoryEnabled in settings.json            →  Per configuration
 None of the above satisfied                   →  Enabled by default
 ```
 
-## 8.4 MEMORY.md: Index, Not Container
+## 6.4 MEMORY.md: Index, Not Container
 
 `MEMORY.md` is the **entrypoint** of the memory system, serving two roles:
 
@@ -261,7 +261,7 @@ An experimental feature gate (`tengu_moth_copse`) is testing the removal of the 
 
 Why test this? The two-step save flow (write file + update index) is **the most error-prone part** of the memory system — the model might write a file but forget to update the index, or the index format might be wrong. If skipIndex mode's recall quality doesn't degrade (because `scanMemoryFiles()` directly scans the directory rather than relying on the index), the entire save flow can be simplified.
 
-## 8.5 Memory Recall: Semantic Retrieval
+## 6.5 Memory Recall: Semantic Retrieval
 
 When the user submits a query, the system automatically searches for relevant memories. This process is divided into three phases: scanning, evaluation, and filtering:
 
@@ -373,7 +373,7 @@ Memory recall is implemented through `pendingMemoryPrefetch` as **asynchronous p
 
 This design ensures the ~250ms latency of memory recall doesn't add to the user-perceived response time. For the user, memory recall is "free."
 
-## 8.6 Memory Freshness and Drift Defense
+## 6.6 Memory Freshness and Drift Defense
 
 Memories record **facts at the time of writing**, but time makes memories stale. The memory system handles this through multiple layers of defense mechanisms.
 
@@ -417,7 +417,7 @@ The rule requires: if memory mentions a file path, verify it exists with Glob/Re
 
 The effect of this section was validated in evals: **without this section, pass rate 0/2; with it added, pass rate 3/3.** This shows that the model defaults to trusting specific references in memory, but code location information in memory decays quickly — a single refactor can invalidate everything.
 
-## 8.7 Background Memory Extraction
+## 6.7 Background Memory Extraction
 
 Beyond the model's active writing and user saving via `/remember`, Claude Code also has a **background memory extraction Agent** (`src/services/extractMemories/extractMemories.ts`) that runs automatically after each conversation turn.
 
@@ -493,7 +493,7 @@ The extraction Agent's prompts (`src/services/extractMemories/prompts.ts`) have 
 
 The extraction Agent is created via `runForkedAgent()`, which uses the same underlying mechanism as the skill system's fork mode. The key advantage is **sharing the parent's prompt cache** — the system prompt doesn't need to be recalculated and transmitted, significantly reducing the token consumption of extraction.
 
-## 8.8 Memory Prompt Construction Hierarchy
+## 6.8 Memory Prompt Construction Hierarchy
 
 The memory system's prompt construction is divided into three levels, each layer adding different content:
 
@@ -544,7 +544,7 @@ KAIROS is an experimental "assistant mode" designed for long-running sessions. U
 
 Each day's log is append-only, avoiding the overhead of frequently updating the MEMORY.md index. Periodically, the `/dream` skill **distills** logs into structured topic memory files. This "append first, organize later" pattern is suitable for high-frequency interaction scenarios.
 
-## 8.9 Team Memory
+## 6.9 Team Memory
 
 When team memory is enabled (`TEAMMEM` feature gate), the system manages two memory directories:
 
@@ -568,7 +568,7 @@ In team mode, the type taxonomy adds `<scope>` tags to guide memory storage loca
 
 **Architecture details**: `isTeamMemoryEnabled()` requires auto memory to be enabled first. The team directory is a subdirectory of the auto memory directory — `mkdir(teamDir)` automatically creates the parent directory through recursive creation. Both directories have independent MEMORY.md indexes, both loaded into the system prompt.
 
-## 8.10 Agent Memory
+## 6.10 Agent Memory
 
 Beyond the main Agent's memory system, Claude Code also provides an independent memory system for **sub-Agents** (created via the Agent tool) (`src/tools/AgentTool/agentMemory.ts`).
 
@@ -594,7 +594,7 @@ The role of `agentType` in the path is to isolate the knowledge space of differe
 
 Agent memory is built through the same `buildMemoryPrompt()` function as main memory, but with Agent-specific behavioral guidance. The injection method is also the same — MEMORY.md indexes go into the system prompt, and specific memories are loaded on demand through semantic recall.
 
-## 8.11 How Memory Is Injected into Conversations
+## 6.11 How Memory Is Injected into Conversations
 
 Memory reaches the model's context window through two paths — MEMORY.md goes via the system prompt (loaded every session), recalled memories go via user messages (injected on demand). Understanding these two paths is essential for grasping the memory system's context overhead.
 
@@ -665,7 +665,7 @@ Memories are wrapped in `<system-reminder>` tags (via `wrapMessagesInSystemRemin
 
 The `isMeta: true` flag ensures these messages are not displayed as user messages in the UI, but the model can see them. This means users are not disturbed by large volumes of memory injections, while the model can reference this information on every turn.
 
-## 8.12 Design Insights
+## 6.12 Design Insights
 
 1. **Only memorize non-derivable information**: Code patterns are read from code, git history is queried from git, memory only stores "meta-information" — this constraint is the foundation of the entire system, preventing memory from becoming an outdated code map
 
@@ -685,4 +685,4 @@ The `isMeta: true` flag ensures these messages are not displayed as user message
 
 > **Hands-on Practice**: In [claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch)'s `src/session.ts`, you can see a minimal session persistence implementation. Try adding a memory system on top of it — write user preferences to the `~/.mini-claude/memory/` directory and inject them into the system prompt.
 
-Previous chapter: [Multi-Agent Architecture](/en/docs/07-multi-agent.md) | Next chapter: [Skills System](/en/docs/09-skills-system.md)
+Previous chapter: [Skills System](/en/docs/09-skills-system.md) | Next chapter: [Hooks & Extensibility](/en/docs/06-hooks-extensibility.md)

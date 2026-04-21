@@ -1,8 +1,8 @@
-# 第 13 章：最小必要组件
+# 第 15 章：最小必要组件
 
 > 从 512K+ 行源码到可运行的最小 coding agent——你真正需要的是什么？
 
-## 13.1 为什么需要"最小必要"视角
+## 15.1 为什么需要"最小必要"视角
 
 Claude Code 是一个生产级系统，512K+ 行代码覆盖了从 OAuth 到 MCP 到 Vim 模式的方方面面。如果你试图通过阅读全部源码来理解 coding agent 的本质，你会迷失在大量的边界情况处理、UI 优化和平台适配代码中。这就像试图通过研究波音 747 的全部蓝图来理解"飞行"的原理一样——你需要的是先理解伯努利方程和四个基本力。
 
@@ -15,11 +15,11 @@ Fred Brooks 在《人月神话》中区分了**本质复杂性**（essential com
 
 **阅读建议**：
 
-- **12.2.1 - 12.2.3**（提示词编排、工具注册表、Agent 循环）是**核心循环层**——这三个组件构成了 agent 的骨架
-- **12.2.4 - 12.2.6**（文件操作、Shell 执行、编辑策略）是**能力层**——赋予 agent 具体的编程能力
-- **12.2.7**（CLI 交互）是**交互层**——让人类能够使用这个 agent
+- **15.2.1 - 15.2.3**（提示词编排、工具注册表、Agent 循环）是**核心循环层**——这三个组件构成了 agent 的骨架
+- **15.2.4 - 15.2.6**（文件操作、Shell 执行、编辑策略）是**能力层**——赋予 agent 具体的编程能力
+- **15.2.7**（CLI 交互）是**交互层**——让人类能够使用这个 agent
 
-## 13.2 七个最小必要组件
+## 15.2 七个最小必要组件
 
 ```mermaid
 graph TD
@@ -660,7 +660,7 @@ echo "hello" && $(rm -rf /)
 eval "$(echo cm0gLXJmIC8= | base64 -d)"
 ```
 
-这是 base64 编码的 `rm -rf /`，正则完全无法检测。AST 分析可以识别 `eval` + 命令替换的模式，将其标记为潜在危险（详见[第 11 章 权限与安全](./11-permission-security.md)）。
+这是 base64 编码的 `rm -rf /`，正则完全无法检测。AST 分析可以识别 `eval` + 命令替换的模式，将其标记为潜在危险（详见[第 12 章 权限与安全](./11-permission-security.md)）。
 
 **命令分类**：Claude Code 将命令分为 search/read/list/neutral/write/destructive 六个类别。只读类别（search、read、list）的命令可以免权限执行。这大幅减少了权限确认弹窗的频率——在一个典型的编程任务中，`grep`、`find`、`ls`、`git log` 等命令占调用总量的 60% 以上。如果每次都要确认，用户体验会极差（这就是"权限疲劳"问题）。
 
@@ -739,7 +739,7 @@ function writeFile(input: { file_path: string; content: string }): string {
 
 **`readFileState` 集成**：Claude Code 维护了一个文件读取状态缓存。当模型调用 `edit_file` 时，系统检查这个文件是否已经被读取过，以及读取后是否被修改。如果模型试图编辑一个从未读取的文件（盲改），系统会拒绝。如果文件在读取后被外部修改了，系统会警告。这两个检查极大地减少了编辑错误，是从最小版本到生产版本最值得添加的增强之一。
 
-**Diff 生成和彩色显示**：每次编辑后，Claude Code 生成并显示一个彩色 diff（删除的行红色、新增的行绿色）。这不改变功能，但极大地改善了用户信任——用户可以直观地看到"agent 改了什么"，而不需要自己去对比文件。透明度是建立用户对 agent 信任的关键因素（详见[第 5 章 代码编辑策略](./05-code-editing-strategy.md)）。
+**Diff 生成和彩色显示**：每次编辑后，Claude Code 生成并显示一个彩色 diff（删除的行红色、新增的行绿色）。这不改变功能，但极大地改善了用户信任——用户可以直观地看到"agent 改了什么"，而不需要自己去对比文件。透明度是建立用户对 agent 信任的关键因素（详见[第 10 章 代码编辑策略](./05-code-editing-strategy.md)）。
 
 ### 组件 7：CLI UX（命令行交互）
 
@@ -869,7 +869,7 @@ export function getLatestSessionId(): string | null {
 
 **OSC 8 超链接**：输出中的文件路径（如 `src/utils/helper.ts:42`）会被渲染为终端超链接。在支持的终端中（iTerm2、VSCode 终端等），点击就能跳转到对应文件和行号。这个小功能的实现成本很低（几十行代码），但对日常工作流的提升非常大——用户不需要复制路径再手动打开文件。
 
-## 13.3 从最小到生产：渐进式增强路线
+## 15.3 从最小到生产：渐进式增强路线
 
 ```mermaid
 graph LR
@@ -921,11 +921,11 @@ graph LR
 
 **MCP 协议集成**：通过 Model Context Protocol 支持外部工具扩展（数据库查询、Slack 发消息、Jira 操作等）。这让 agent 的能力边界从"本地文件操作"扩展到"任意外部服务"。
 
-**多 Agent**（AgentTool）：将复杂任务分解给子 agent 并行执行。主 agent 负责规划和协调，子 agent 负责具体执行。这是处理大型项目级任务的关键架构（详见[第 7 章 多 Agent 架构](./07-multi-agent.md)）。
+**多 Agent**（AgentTool）：将复杂任务分解给子 agent 并行执行。主 agent 负责规划和协调，子 agent 负责具体执行。这是处理大型项目级任务的关键架构（详见[第 8 章 多 Agent 架构](./07-multi-agent.md)）。
 
 **提示词缓存优化**：精心排列系统提示词的内容顺序，最大化 API 的前缀缓存命中率。在高频使用场景下可节省 30-50% 的 API 成本。
 
-## 13.4 claude-code-from-scratch 项目
+## 15.4 claude-code-from-scratch 项目
 
 [claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch) 项目提供了一个可运行的最小实现（~3000 行核心代码），帮助你：
 
@@ -940,7 +940,7 @@ graph LR
 
 详细的分步教程请参考 [claude-code-from-scratch 文档](https://github.com/Windy3f3f3f3f/claude-code-from-scratch)。
 
-## 13.5 最小版本 vs 生产版本的关键差异
+## 15.5 最小版本 vs 生产版本的关键差异
 
 | 维度 | 最小版本 | Claude Code 生产版本 |
 |------|---------|-------------------|
@@ -960,7 +960,7 @@ graph LR
 | 会话管理 | JSON 文件持久化 | JSONL 转录 + 快照恢复 |
 | Token 追踪 | 简单计数 | 预算管理 + 成本显示 + 跨压缩结转 |
 
-## 13.6 核心洞察
+## 15.6 核心洞察
 
 构建 coding agent 的最大误区是认为"写一个好的 prompt 就够了"。实际上：
 

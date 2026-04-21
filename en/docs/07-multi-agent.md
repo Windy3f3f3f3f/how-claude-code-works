@@ -1,8 +1,8 @@
-# Chapter 7: Multi-Agent Architecture
+# Chapter 8: Multi-Agent Architecture
 
 > From a single Agent to a team of Agents — how Claude Code coordinates multiple Agents to complete complex tasks in parallel.
 
-## 7.1 Three Multi-Agent Patterns
+## 8.1 Three Multi-Agent Patterns
 
 Claude Code supports three multi-Agent collaboration patterns, suitable for scenarios of varying complexity:
 
@@ -47,7 +47,7 @@ These three patterns increase in complexity, but share the same underlying infra
 - Need pre-execution plan approval? --> Plan mode (can be combined with any of the above)
 - Not sure? --> Start with the Sub-Agent pattern and upgrade when complexity demands it
 
-## 7.2 Sub-Agent Pattern (AgentTool)
+## 8.2 Sub-Agent Pattern (AgentTool)
 
 This is the most fundamental multi-Agent pattern. The parent Agent spawns a sub-Agent via [AgentTool](/en/docs/04-tool-system.md) to execute independent tasks.
 
@@ -285,7 +285,7 @@ flowchart TD
 **Layer 3 exceptions**:
 - **MCP tools** (names starting with `mcp__`) always pass through — they are provided by user-configured external services, and the user is responsible for their security
 - **ExitPlanMode**: Allowed when `permissionMode === 'plan'` — in-process teammates need the ability to exit Plan mode
-- **In-process teammates**: Gain additional Agent tools (can spawn synchronous sub-Agents) and task coordination tools (TaskCreate/TaskGet/TaskList/TaskUpdate/SendMessage) — these tools enable teammates to coordinate shared task lists and communicate with each other (for a complete analysis of the task system, see [Chapter 15](15-task-system.md))
+- **In-process teammates**: Gain additional Agent tools (can spawn synchronous sub-Agents) and task coordination tools (TaskCreate/TaskGet/TaskList/TaskUpdate/SendMessage) — these tools enable teammates to coordinate shared task lists and communicate with each other (for a complete analysis of the task system, see [Chapter 11](15-task-system.md))
 
 **Layer 4**: The Agent's own defined `disallowedTools`. For example, the Explore Agent explicitly excludes `[Agent, ExitPlanMode, FileEdit, FileWrite, NotebookEdit]`.
 
@@ -570,7 +570,7 @@ export const FORK_AGENT = {
 
 **Mutually exclusive with Coordinator mode**: Fork and Coordinator cannot be enabled simultaneously — the Coordinator has its own Worker delegation mechanism, and fork's "inherit full context" design contradicts the Coordinator's "Worker starts from scratch" philosophy.
 
-## 7.3 Coordinator Mode
+## 8.3 Coordinator Mode
 
 Coordinator mode (Feature-gated: `COORDINATOR_MODE`) transforms the main Agent into a **pure orchestrator** — only responsible for analyzing tasks, assigning Workers, and synthesizing results, never directly operating on files.
 
@@ -721,7 +721,7 @@ Every Worker prompt must be self-contained. The Coordinator prompt repeatedly em
 
 This is the most common mistake for beginners — writing prompts like "please continue the previous work," but the Worker has no idea what "previous" refers to.
 
-## 7.4 Swarm Execution Backend
+## 8.4 Swarm Execution Backend
 
 The Swarm system supports creating **named Agent teams**, where Agents communicate peer-to-peer through mailboxes.
 
@@ -840,7 +840,7 @@ Workers can freely read and write files in this directory (without permission co
 
 Scratchpad provides a direct bypass channel: Worker A writes detailed findings to a file, and Worker B reads them directly — without going through the Coordinator's "understanding and retelling."
 
-## 7.5 Worker Result Delivery
+## 8.5 Worker Result Delivery
 
 After a sub-Agent / Worker completes its task, how does the result get back to the parent safely and reliably? This involves two fundamentally different return paths, a notification deduplication mechanism, and security classification against prompt injection.
 
@@ -934,7 +934,7 @@ When a worker reports failure:
 - If a correction attempt fails, try a different approach or report to the user
 ```
 
-## 7.6 Plan Mode: Two-Phase Execution
+## 8.6 Plan Mode: Two-Phase Execution
 
 Plan mode inserts an **approval checkpoint** into the Agent's tool call loop — upon entering Plan mode, write permissions are stripped at the system level, and the Agent can only read code and write plan files; after the user approves the plan, permissions are restored, and the Agent executes modifications according to the plan.
 
@@ -1040,7 +1040,7 @@ Two-phase design forces the Agent to "think thoroughly before acting" through an
 
 This is not a suggestion; it is a hard constraint — write tool permissions are stripped at the system level in Plan mode, and even if the model attempts to call them, the calls will be rejected.
 
-## 7.7 Design Insights
+## 8.7 Design Insights
 
 1. **The Coordinator not executing is a core constraint**: Prevents the Coordinator from both making decisions and executing them, guaranteeing objectivity in task allocation. This is also why the Coordinator's toolset is strictly limited to Agent + SendMessage + TaskStop.
 2. **"Never write based on your findings" is the most important prompt design**: Forces the Coordinator to synthesize and understand research results rather than delegating understanding to Workers. This constraint elevates the Coordinator from a message forwarder to a truly intelligent orchestrator.
@@ -1056,3 +1056,5 @@ This is not a suggestion; it is a hard constraint — write tool permissions are
 ---
 
 > **Hands-on practice**: In [claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch), the Agent main loop (`src/agent.ts`) implements a basic tool call loop. Try adding a simple "plan mode" on top of it — collect all planned operations before executing tools, and let the user approve them all at once.
+
+Previous chapter: [Hooks & Extensibility](/en/docs/06-hooks-extensibility.md) | Next chapter: [Plan Mode](/en/docs/10-plan-mode.md)

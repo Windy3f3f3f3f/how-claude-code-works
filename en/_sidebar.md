@@ -8,23 +8,23 @@
 
 - **Capability Systems**
   - [4. Tool System](/en/docs/04-tool-system.md)
-  - [5. Code Editing Strategy](/en/docs/05-code-editing-strategy.md)
-  - [6. Hooks & Extensibility](/en/docs/06-hooks-extensibility.md)
-  - [7. Multi-Agent Architecture](/en/docs/07-multi-agent.md)
-  - [8. Memory System](/en/docs/08-memory-system.md)
-  - [9. Skills System](/en/docs/09-skills-system.md)
-  - [10. Plan Mode](/en/docs/10-plan-mode.md)
-  - [15. Task Management System](/en/docs/15-task-system.md)
+  - [5. Skills System](/en/docs/09-skills-system.md)
+  - [6. Memory System](/en/docs/08-memory-system.md)
+  - [7. Hooks & Extensibility](/en/docs/06-hooks-extensibility.md)
+  - [8. Multi-Agent Architecture](/en/docs/07-multi-agent.md)
 
-- **Infrastructure**
-  - [11. Permissions & Security](/en/docs/11-permission-security.md)
-  - [12. User Experience Design](/en/docs/12-user-experience.md)
+- **Runtime Logic**
+  - [9. Plan Mode](/en/docs/10-plan-mode.md)
+  - [10. Code Editing Strategy](/en/docs/05-code-editing-strategy.md)
+  - [11. Task Management System](/en/docs/15-task-system.md)
+  - [12. Permissions & Security](/en/docs/11-permission-security.md)
 
 - **Design Philosophy**
-  - [14. System Prompt Design](/en/docs/14-system-prompt-design.md)
+  - [13. System Prompt Design](/en/docs/14-system-prompt-design.md)
+  - [14. User Experience Design](/en/docs/12-user-experience.md)
 
-- **Build Your Own**
-  - [13. Minimal Essential Components](/en/docs/13-minimal-components.md)
+- **Practical Implementation**
+  - [15. Minimal Essential Components](/en/docs/13-minimal-components.md)
 
 - **Reference**
   - [Quick Reference](/en/docs/reference.md)

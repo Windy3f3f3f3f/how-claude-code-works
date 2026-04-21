@@ -274,7 +274,7 @@ A runnable minimal version can be implemented in ~3000 lines of code (including 
 
 If you want to get hands-on, you can follow our step-by-step tutorial to build from scratch: [claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch)
 
-> Further reading: [Minimal Required Components](/en/docs/13-minimal-components.md)
+> Further reading: [Minimal Necessary Components](/en/docs/13-minimal-components.md)
 
 ---
 

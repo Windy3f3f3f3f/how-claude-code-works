@@ -1,4 +1,4 @@
-# Chapter 12: User Experience Design
+# Chapter 14: User Experience Design
 
 > Good usability = Model capability × Interaction design × Engineering constraints
 
@@ -6,13 +6,13 @@
 
 This chapter covers the complete technology stack of Claude Code's terminal UI. The content is organized around three core layers:
 
-- **Rendering Engine** (12.2): Custom-built Ink/React terminal renderer, including Yoga layout, Screen Buffer diff, and object pool memory optimization
-- **Data Flow** (12.3): `Stream<T>` + `async function*` streaming pipeline from API SSE to terminal rendering, plus `StreamingMarkdown` incremental parsing
-- **Interaction Layer** (12.4–12.8): Tool call transparency, automatic error recovery, keyboard shortcuts, Vim mode, REPL main interface (virtual scrolling, permission anti-misclick, session recovery)
+- **Rendering Engine** (14.2): Custom-built Ink/React terminal renderer, including Yoga layout, Screen Buffer diff, and object pool memory optimization
+- **Data Flow** (14.3): `Stream<T>` + `async function*` streaming pipeline from API SSE to terminal rendering, plus `StreamingMarkdown` incremental parsing
+- **Interaction Layer** (14.4–14.8): Tool call transparency, automatic error recovery, keyboard shortcuts, Vim mode, REPL main interface (virtual scrolling, permission anti-misclick, session recovery)
 
-Additionally covered: terminal protocol support (12.9), diagnostics interface (12.10), cost tracking (12.11), search and text selection (12.12). Finally, 12.13 distills design insights.
+Additionally covered: terminal protocol support (14.9), diagnostics interface (14.10), cost tracking (14.11), search and text selection (14.12). Finally, 14.13 distills design insights.
 
-## 12.1 Design Philosophy
+## 14.1 Design Philosophy
 
 Every Code Agent faces a core UX contradiction: **the tension between autonomy and trust**.
 
@@ -21,12 +21,12 @@ Give the Agent too much autonomy, and users feel uneasy — "What files did it m
 Claude Code found a precise balance point between the two: **Observable Autonomy**. The Agent acts freely, but lets users see every step in real time:
 
 - **Real-time visibility**: All tool calls are displayed via streaming. This isn't "wait until it's done, then show you the result," but rather "you can see parameters and progress during execution." The benefit is that users can press Ctrl+C to interrupt within the **first 3 seconds** of the Agent going in the wrong direction, instead of waiting 20 seconds for execution to finish before undoing — the cost of interruption is far lower than the cost of undoing.
-- **Minimize interruptions**: Only interrupt user flow when permission confirmation is truly needed. Permission dialogs even have a 200ms anti-misclick delay (detailed in Section 12.8), showing how seriously the team takes "the cost of interruption."
+- **Minimize interruptions**: Only interrupt user flow when permission confirmation is truly needed. Permission dialogs even have a 200ms anti-misclick delay (detailed in Section 14.8), showing how seriously the team takes "the cost of interruption."
 - **Streaming output supports decision-making**: Users judge whether the direction is correct while watching streaming output. If they notice the wrong direction after 3 seconds of model output, an immediate Ctrl+C saves the remaining 15 seconds of generation time and Token cost.
 
 This philosophy can be summarized in one sentence: **Trust but verify in real time** — give the Agent full freedom of action, but make every operation a glass box, not a black box.
 
-## 12.2 Ink/React Terminal UI
+## 14.2 Ink/React Terminal UI
 
 Claude Code uses a **custom-built Ink terminal renderer** (based on React), with the core module `src/ink/ink.tsx` reaching 251KB. This isn't simple console.log output — it's a complete React application running in the terminal.
 
@@ -140,7 +140,7 @@ No "blink coordinator" is needed to synchronize multiple components — they rea
 
 Taking `useInput()` as an example, it handles raw keycode parsing (including Escape sequences and Kitty extended key codes) and dispatches keyboard events to the correct handler based on the current mode (Normal/Vim/search). Developers only need to care about "what key was pressed" and "what mode we're in," without needing to understand the details of the underlying terminal protocol.
 
-## 12.3 Streaming Output
+## 14.3 Streaming Output
 
 Claude Code's streaming output isn't "wait until it's done, then display" — it's **truly real-time streaming rendering**.
 
@@ -326,7 +326,7 @@ An important optimization enabled by streaming output is: **tool execution doesn
 
 In real-world scenarios, model streaming output typically takes 5-30 seconds, while tool execution (such as file reading, searching) usually takes less than 1 second. Through parallel execution, tool latency is completely "hidden" within the model's output time, and users barely notice the tool execution wait. This is also why Claude Code feels much faster than "serial execution" Agents in multi-tool-call scenarios.
 
-## 12.4 Tool Call Transparency
+## 14.4 Tool Call Transparency
 
 Every tool call is displayed in real time through React components. Each Tool interface defines its own rendering methods:
 
@@ -359,7 +359,7 @@ The `renderGroupedToolUse?()` method supports merging multiple tool calls of the
 | Successfully completed | Green | Static | Completed |
 | Error | Red | Static | Execution failed |
 
-When multiple tools execute in parallel, all "executing" ToolUseLoader dots **blink in sync** — they light up or go dark at the same instant. This isn't achieved by a "blink coordinator" but leverages the mathematical synchronization of the `useBlink` Hook (detailed in Section 12.2). Synchronized blinking gives users a sense of "the system operating in unison," which feels more orderly than each blinking independently.
+When multiple tools execute in parallel, all "executing" ToolUseLoader dots **blink in sync** — they light up or go dark at the same instant. This isn't achieved by a "blink coordinator" but leverages the mathematical synchronization of the `useBlink` Hook (detailed in Section 14.2). Synchronized blinking gives users a sense of "the system operating in unison," which feels more orderly than each blinking independently.
 
 The source code also contains an interesting comment revealing an ANSI rendering pitfall: chalk library's `</dim>` and `</bold>` both reset via `\x1b[22m]`, which means when a dim element immediately precedes a bold element, bold gets unexpectedly rendered as dim. ToolUseLoader deliberately places the dot and tool name in separate `<Text>` elements with a `<Box>` spacer between them to work around this issue.
 
@@ -394,7 +394,7 @@ Tools can emit progress events during execution via `yield { type: 'progress', c
 
 This means when a user runs `npm install`, instead of waiting 30 seconds to see all output at once, they see each line of package installation logs in real time. This immediate feedback dramatically reduces the anxiety of "What is the Agent doing? Why is it taking so long?"
 
-## 12.5 Error Handling and Recovery
+## 14.5 Error Handling and Recovery
 
 Claude Code's error handling strategy is "recover automatically whenever possible; only tell the user when there's truly no alternative." But this isn't simply "retry everything" — it makes nuanced judgments based on error type, query source, and system state.
 
@@ -519,7 +519,7 @@ Heartbeat: yield a SystemAPIErrorMessage every 30 seconds
   Purpose: Prevent the host environment from marking the session as idle and terminating it
 ```
 
-## 12.6 Keyboard Shortcuts
+## 14.6 Keyboard Shortcuts
 
 Claude Code supports a rich set of keyboard shortcuts, covering the full range from basic operations to advanced features:
 
@@ -562,7 +562,7 @@ The key binding system supports three key features:
 - **Context Conditions (`when`)**: The `when` field restricts the scope in which a shortcut takes effect, such as `inputFocused` (when the input box is focused), `permissionDialogOpen` (when the permission dialog is open), etc.
 - **Extended Key Codes**: Thanks to the Kitty keyboard protocol, Claude Code can distinguish key combinations that traditional terminals cannot differentiate (e.g., Ctrl+Shift+A vs Ctrl+A), providing more granular shortcut support.
 
-## 12.7 Vim Mode
+## 14.7 Vim Mode
 
 `src/vim/` implements Vim key bindings for terminal input (approximately 40KB total), allowing users accustomed to Vim to use familiar editing modes in Claude Code's input box.
 
@@ -623,7 +623,7 @@ Text objects are Vim's "nouns," defining the scope of an operation. They come in
 
 Operators, motions, and text objects can be freely combined to form a powerful editing grammar: `diw` = delete inside word, `ci"` = change content inside quotes, `ya{` = yank inside braces (including the braces). This compositional design means a small number of basic elements can cover a vast number of editing scenarios, making it feel especially natural for Vim users when editing long prompts.
 
-## 12.8 REPL Main Interface
+## 14.8 REPL Main Interface
 
 `src/screens/REPL.tsx` (895KB) is the primary interaction interface of the entire application. It integrates:
 
@@ -686,7 +686,7 @@ Claude Code has complete session recovery capabilities, ensuring that unexpected
 
 This means that even if Claude Code crashes, the terminal closes unexpectedly, or the system restarts, users will not lose the context of a long-running conversation.
 
-## 12.9 Terminal Protocol Support
+## 14.9 Terminal Protocol Support
 
 `src/ink/termio/` handles low-level terminal protocols, supporting multiple advanced features. The following table categorizes by protocol module, listing the protocol standard, provided terminal feature, and description for each:
 
@@ -709,7 +709,7 @@ Raw terminal bytes → ANSI Parser parsing → Structured events (keystrokes, mo
 
 This architecture transforms the terminal's low-level byte stream into high-level semantic events, so React components don't need to concern themselves with terminal protocol details. The ANSI Parser is responsible for recognizing various escape sequences (CSI sequences for keyboard and cursor, OSC sequences for hyperlinks and clipboard, SGR sequences for styling), converting them into typed event objects, and then distributing them to the appropriate components through React's event system.
 
-## 12.10 Diagnostics Interface
+## 14.10 Diagnostics Interface
 
 `src/screens/Doctor.tsx` (73KB) provides system diagnostics functionality:
 
@@ -727,7 +727,7 @@ This architecture transforms the terminal's low-level byte stream into high-leve
 └─────────────────────────────────────┘
 ```
 
-## 12.11 Cost and Usage Display
+## 14.11 Cost and Usage Display
 
 ### Actual Display Format
 
@@ -772,7 +772,7 @@ Budget exceeded → Display cost spent and terminate gracefully (will not abrupt
 
 When rate limiting is encountered, Claude Code displays the estimated wait time on the interface and automatically retries. When the user's configured budget is about to be exhausted, the system terminates gracefully after the current operation completes, rather than abruptly interrupting an in-progress tool call or model output.
 
-## 12.12 Search and Text Selection
+## 14.12 Search and Text Selection
 
 ### Search Highlighting
 
@@ -806,7 +806,7 @@ Text selection in a terminal is far more complex than in GUI applications, becau
 
 Hit Testing is the key technology for text selection: each cell in the Screen Buffer stores not only character and style information but also records which React component it originated from. When the user clicks or drags the mouse, the system precisely determines the selection range through the chain of `mouse coordinates → Screen Buffer cell → source component → text offset position`. This enables text selection precision in the terminal comparable to GUI applications.
 
-## 12.13 Design Insights
+## 14.13 Design Insights
 
 1. **React in Terminal is not a toy**: The 251KB custom Ink renderer proves that terminal UI can achieve web-level interactive experiences. But the real value is not in the rendering itself, but in **development efficiency** — new features (Shimmer animation, virtual scrolling, search highlighting) can be composed from existing React primitives without touching the rendering pipeline.
 
@@ -824,4 +824,4 @@ Hit Testing is the key technology for text selection: each cell in the Screen Bu
 
 ---
 
-Previous chapter: [Permission and Security](/en/docs/11-permission-security.md) | Next chapter: [Minimal Required Components](/en/docs/13-minimal-components.md)
+Previous chapter: [System Prompt Design](/en/docs/14-system-prompt-design.md) | Next chapter: [Minimal Necessary Components](/en/docs/13-minimal-components.md)

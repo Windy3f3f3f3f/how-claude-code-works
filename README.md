@@ -145,17 +145,17 @@ Claude Code 支持三种多 Agent 模式：
 | 2 | [系统主循环](./docs/02-agent-loop.md) | Agent 循环的双层架构、7 种 Continue Sites 故障恢复、工具预执行、StreamingToolExecutor 并发机制 |
 | 3 | [上下文工程](./docs/03-context-engineering.md) | 4 级压缩流水线完整细节、压缩后自动恢复机制（5 文件 + 技能重激活）、提示词缓存策略与缓存断裂检测 |
 | 4 | [工具系统](./docs/04-tool-system.md) | 66 个工具的注册与并发控制、MCP 7 种传输详解、连接状态机、OAuth 2.0 + PKCE 认证流程 |
-| 5 | [代码编辑策略](./docs/05-code-editing-strategy.md) | search-and-replace 为什么比整文件重写更好、唯一性约束与抗幻觉设计、编辑前强制读取的代码级实现 |
-| 6 | [Hooks 与可扩展性](./docs/06-hooks-extensibility.md) | 23+ Hook 事件全景、5 种 Hook 类型、6 阶段执行管道、PermissionRequest 4 种能力、信任模型与安全 |
-| 7 | [多 Agent 架构](./docs/07-multi-agent.md) | 子 Agent 4 种执行模式与 Worktree 隔离、协调器纯编排设计、Swarm 3 种执行后端与信箱通信 |
-| 8 | [记忆系统](./docs/08-memory-system.md) | 4 种记忆类型与封闭分类法、Sonnet 语义召回与异步预取、后台记忆提取 Agent、记忆漂移防御、团队记忆 |
-| 9 | [技能系统](./docs/09-skills-system.md) | 6 层技能来源与优先级、懒加载与 Token 预算分配、Inline/Fork 双执行模式、白名单权限模型、压缩后技能保留 |
-| 10 | [Plan 模式](./docs/10-plan-mode.md) | 两条进入路径、5 阶段与迭代双工作流、附件节流机制、Phase 4 四种实验变体、计划文件管理与恢复、审批与权限恢复 |
-| 11 | [权限与安全](./docs/11-permission-security.md) | 5 层纵深防御体系、tree-sitter AST 分析 + 23 项安全检查、竞速确认机制与 200ms 防误触 |
-| 12 | [用户体验设计](./docs/12-user-experience.md) | 自研 Ink 渲染器架构、Yoga Flexbox 布局、虚拟滚动与对象池优化、Vim 模式 |
-| 13 | [最小必要组件](./docs/13-minimal-components.md) | 7 个最小必要组件框架、最小实现 vs 生产级实现的逐项对照、从 500 行到 50 万行的演进路线 |
-| 14 | [系统提示词设计](./docs/14-system-prompt-design.md) | 7 层递进式提示词架构、反模式接种与负面清单设计、爆炸半径风险框架、内外分层变体、7 条 Agent 提示词设计原则 |
-| 15 | [任务管理系统](./docs/15-task-system.md) | 文件级存储与并发锁设计、三层变更检测、依赖追踪与原子认领、多 Agent 任务协调、验证提醒机制 |
+| 5 | [技能系统](./docs/09-skills-system.md) | 6 层技能来源与优先级、懒加载与 Token 预算分配、Inline/Fork 双执行模式、白名单权限模型、压缩后技能保留 |
+| 6 | [记忆系统](./docs/08-memory-system.md) | 4 种记忆类型与封闭分类法、Sonnet 语义召回与异步预取、后台记忆提取 Agent、记忆漂移防御、团队记忆 |
+| 7 | [Hooks 与可扩展性](./docs/06-hooks-extensibility.md) | 23+ Hook 事件全景、5 种 Hook 类型、6 阶段执行管道、PermissionRequest 4 种能力、信任模型与安全 |
+| 8 | [多 Agent 架构](./docs/07-multi-agent.md) | 子 Agent 4 种执行模式与 Worktree 隔离、协调器纯编排设计、Swarm 3 种执行后端与信箱通信 |
+| 9 | [Plan 模式](./docs/10-plan-mode.md) | 两条进入路径、5 阶段与迭代双工作流、附件节流机制、Phase 4 四种实验变体、计划文件管理与恢复、审批与权限恢复 |
+| 10 | [代码编辑策略](./docs/05-code-editing-strategy.md) | search-and-replace 为什么比整文件重写更好、唯一性约束与抗幻觉设计、编辑前强制读取的代码级实现 |
+| 11 | [任务管理系统](./docs/15-task-system.md) | 文件级存储与并发锁设计、三层变更检测、依赖追踪与原子认领、多 Agent 任务协调、验证提醒机制 |
+| 12 | [权限与安全](./docs/11-permission-security.md) | 5 层纵深防御体系、tree-sitter AST 分析 + 23 项安全检查、竞速确认机制与 200ms 防误触 |
+| 13 | [系统提示词设计](./docs/14-system-prompt-design.md) | 7 层递进式提示词架构、反模式接种与负面清单设计、爆炸半径风险框架、内外分层变体、7 条 Agent 提示词设计原则 |
+| 14 | [用户体验设计](./docs/12-user-experience.md) | 自研 Ink 渲染器架构、Yoga Flexbox 布局、虚拟滚动与对象池优化、Vim 模式 |
+| 15 | [最小必要组件](./docs/13-minimal-components.md) | 7 个最小必要组件框架、最小实现 vs 生产级实现的逐项对照、从 500 行到 50 万行的演进路线 |
 
 ## 🎯 谁应该读这个？
 

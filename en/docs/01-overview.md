@@ -60,7 +60,7 @@ This loop **only exits when the model's response does not contain any tool calls
 The technology choices themselves are not the focus of this article, but two choices are worth mentioning because they profoundly influence the architectural design:
 
 - **Bun's `feature()` macro**: Claude Code internally has a large number of features (coordinator mode, Swarm teams, etc.) that need to be completely removed in external release versions. The compile-time Feature Flags provided by Bun allow this code to be physically removed at build time, rather than hidden at runtime. This will be expanded upon in the "Compile-time Feature Gate" design principle section later.
-- **In-house React terminal renderer**: The terminal UI complexity of Claude Code far exceeds that of a typical CLI -- permission confirmation dialogs, streaming code highlighting, nested tool progress indicators all require componentized state management. The team maintains a ~1.0MB custom Ink renderer (rather than using the upstream library), see [Chapter 12: User Experience Design](/en/docs/12-user-experience.md) for details.
+- **In-house React terminal renderer**: The terminal UI complexity of Claude Code far exceeds that of a typical CLI -- permission confirmation dialogs, streaming code highlighting, nested tool progress indicators all require componentized state management. The team maintains a ~1.0MB custom Ink renderer (rather than using the upstream library), see [Chapter 14: User Experience Design](/en/docs/12-user-experience.md) for details.
 
 ## 1.3 Core Design Principles
 

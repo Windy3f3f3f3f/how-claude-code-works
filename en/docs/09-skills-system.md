@@ -1,8 +1,8 @@
-# Chapter 9: Skills System
+# Chapter 5: Skills System
 
 > Skills are Claude Code's "AI Shell Scripts" — they templatize proven effective prompts so the Agent doesn't have to write the same workflow from scratch every time.
 
-## 9.1 What Are Skills?
+## 5.1 What Are Skills?
 
 Shell scripts automate terminal tasks; skills automate AI tasks. A skill is essentially: **prompt template + metadata + execution context**.
 
@@ -47,7 +47,7 @@ Each skill is a directory containing a `SKILL.md` file:
 
 Why a directory format instead of a single file? Because skills may need accompanying resource files (templates, configurations, reference docs), referenced via the `${CLAUDE_SKILL_DIR}` environment variable. The directory format makes each skill a self-contained unit.
 
-## 9.2 Skill Sources and Loading
+## 5.2 Skill Sources and Loading
 
 > This section answers: Where do skills come from? What happens at Claude Code startup?
 
@@ -89,7 +89,7 @@ export function estimateSkillFrontmatterTokens(skill: Command): number {
 
 By loading only frontmatter to let the model know "what skills are available" and deferring content loading until actually needed, this achieves **low discovery cost, pay-per-execution**.
 
-## 9.3 Skill Discovery: How Does the Model Know Skills Exist?
+## 5.3 Skill Discovery: How Does the Model Know Skills Exist?
 
 > This section answers: How does the skill listing enter the model's view? How does the model decide when to auto-trigger a skill?
 
@@ -164,7 +164,7 @@ To illustrate these principles with counter-examples:
 
 Note that these trigger instructions are **documentary** — the model judges on its own based on the descriptions, not automatic triggers. The model may miss or misjudge, but this is a pragmatic design: compared to building a complex rules engine, having the model understand natural language descriptions is already good enough.
 
-## 9.4 Frontmatter and Prompt Processing
+## 5.4 Frontmatter and Prompt Processing
 
 > This section answers: What can you write in a skill file? What processing does the prompt go through before execution?
 
@@ -188,7 +188,7 @@ Skill files are Markdown + YAML frontmatter. Here are all supported fields:
 | **Visibility** | `paths` | gitignore-style path patterns (only show when working under matching paths) |
 | | `user-invocable` | `false` hides from user `/name` direct invocation |
 | | `disable-model-invocation` | `true` prevents model auto-triggering |
-| **Extension** | `hooks` | Skill-level hook definitions (see [9.8](#98-extension-mechanisms-and-design-insights)) |
+| **Extension** | `hooks` | Skill-level hook definitions (see [5.8](#58-extension-mechanisms-and-design-insights)) |
 
 A few notable field designs:
 
@@ -234,9 +234,9 @@ Current branch: !`git branch --show-current`
 Recent commits: !`git log --oneline -5`
 ```
 
-All embedded shell commands are executed **in parallel** (`Promise.all`), with permission checks before each command. MCP skills from remote untrusted servers skip shell execution and `${CLAUDE_SKILL_DIR}` substitution — this is an explicit check on a security-critical path, analyzed in detail in [Section 9.6](#96-security-and-trust-model).
+All embedded shell commands are executed **in parallel** (`Promise.all`), with permission checks before each command. MCP skills from remote untrusted servers skip shell execution and `${CLAUDE_SKILL_DIR}` substitution — this is an explicit check on a security-critical path, analyzed in detail in [Section 5.6](#56-security-and-trust-model).
 
-## 9.5 Execution Model: Inline vs Fork
+## 5.5 Execution Model: Inline vs Fork
 
 > This section answers: How are skills executed? What's the difference between the two execution modes?
 
@@ -376,7 +376,7 @@ Focus: unhandled exceptions, hardcoded secrets, obvious logic errors.
 
 Sonnet is faster and cheaper, fork ensures isolation, `effort: quick` further reduces thinking depth. Three dimensions of resource optimization stacked.
 
-## 9.6 Security and Trust Model
+## 5.6 Security and Trust Model
 
 > This section answers: How does the skill system ensure security? What restrictions apply to skills from different sources?
 
@@ -440,7 +440,7 @@ Some bundled skills need to extract resource files to disk at runtime. `safeWrit
 - **Owner-only permissions** (`0o700`/`0o600`): Only the current user can read and write
 - **Lazy extraction + memoize**: `extractionPromise` ensures multiple concurrent calls wait for the same extraction to complete, rather than racing to write
 
-## 9.7 Skill Persistence in Long Sessions
+## 5.7 Skill Persistence in Long Sessions
 
 > This section answers: After conversation compaction, are skill instructions lost?
 
@@ -480,7 +480,7 @@ Allocation strategy:
 
 Recorded skills are isolated by `agentId` — skills invoked by a sub-Agent do not leak into the parent Agent's compaction recovery, and vice versa. `clearInvokedSkillsForAgent(agentId)` cleans up a fork Agent's skill records upon completion. This ensures compaction recovery precision: each Agent only recovers skills it actually used.
 
-## 9.8 Extension Mechanisms and Design Insights
+## 5.8 Extension Mechanisms and Design Insights
 
 > This section answers: How does the skill system support extensibility? What design lessons are worth learning?
 
@@ -538,4 +538,4 @@ Some bundled skills are gated by feature flags (e.g., `claudeApi` requires `BUIL
 
 > **Hands-on practice**: Create a custom skill in the `.claude/skills/` directory. Start with the simplest inline skill — all you need is a `skill-name/SKILL.md` file. Observe how it appears in the `/` completion list, and how the model auto-triggers it based on `when-to-use`.
 
-Previous chapter: [Memory System](/en/docs/08-memory-system.md) | Next chapter: [Plan Mode](/en/docs/10-plan-mode.md)
+Previous chapter: [Tool System](/en/docs/04-tool-system.md) | Next chapter: [Memory System](/en/docs/08-memory-system.md)

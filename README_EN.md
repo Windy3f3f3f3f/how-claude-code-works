@@ -129,27 +129,27 @@ To prevent conflicts from multiple agents editing the same files, the system use
 ## Documentation
 
 ### Quick Start
-- **[Understand Claude Code in 10 Minutes](./docs/quick-start.md)** — Condensed overview of everything
+- **[Understand Claude Code in 10 Minutes](./en/docs/quick-start.md)** — Condensed overview of everything
 
 ### Deep Dives
 
 | # | Document | What you'll learn |
 |---|----------|-------------------|
-| 1 | [Overview](./docs/01-overview.md) | What problem Claude Code solves, the thinking behind tech choices, overall architecture |
-| 2 | [Agent Loop](./docs/02-agent-loop.md) | How the agent "think-act-observe" loop works, how it handles interruption and recovery |
-| 3 | [Context Engineering](./docs/03-context-engineering.md) | How to fit the most useful information into a limited context window, full compression strategy details |
-| 4 | [Tool System](./docs/04-tool-system.md) | How 66 tools are registered, dispatched, and concurrency-controlled; how to integrate third-party tools |
-| 5 | [Code Editing Strategy](./docs/05-code-editing-strategy.md) | Why "search-and-replace" over "full file rewrite," how to ensure edit safety |
-| 6 | [Hooks & Extensibility](./docs/06-hooks-extensibility.md) | 23 hook events, how to customize Claude Code's behavior without modifying source code |
-| 7 | [Multi-Agent Architecture](./docs/07-multi-agent.md) | Sub-agent, Coordinator, and Swarm — design tradeoffs of three multi-agent modes |
-| 8 | [Memory System](./docs/08-memory-system.md) | 4 memory types, Sonnet semantic recall, background extraction agent, drift defense |
-| 9 | [Skills System](./docs/09-skills-system.md) | 6 skill sources, lazy loading, inline/fork execution, permission model, post-compaction preservation |
-| 10 | [Plan Mode](./docs/10-plan-mode.md) | Two entry paths, 5-phase workflow, attachment throttling, Phase 4 A/B experiments, plan file management, approval and permission restoration |
-| 11 | [Permission & Security](./docs/11-permission-security.md) | The complete 5-layer security system, 23 Bash security checks |
-| 12 | [User Experience](./docs/12-user-experience.md) | Why React for terminal UI, streaming output implementation, terminal interaction details |
-| 13 | [Minimal Components](./docs/13-minimal-components.md) | The minimum modules needed for a coding agent, the evolution path from 500 lines to 500K |
-| 14 | [System Prompt Design](./docs/14-system-prompt-design.md) | 7-layer progressive prompt architecture, anti-pattern inoculation, blast radius risk framework, 7 agent prompt design principles |
-| 15 | [Task Management System](./docs/15-task-system.md) | File-level storage with concurrency locking, 3-layer change detection, dependency tracking and atomic claiming, multi-agent task coordination, verification nudge |
+| 1 | [Overview](./en/docs/01-overview.md) | What problem Claude Code solves, the thinking behind tech choices, overall architecture |
+| 2 | [Agent Loop](./en/docs/02-agent-loop.md) | How the agent "think-act-observe" loop works, how it handles interruption and recovery |
+| 3 | [Context Engineering](./en/docs/03-context-engineering.md) | How to fit the most useful information into a limited context window, full compression strategy details |
+| 4 | [Tool System](./en/docs/04-tool-system.md) | How 66 tools are registered, dispatched, and concurrency-controlled; how to integrate third-party tools |
+| 5 | [Skills System](./en/docs/09-skills-system.md) | 6 skill sources, lazy loading, inline/fork execution, permission model, post-compaction preservation |
+| 6 | [Memory System](./en/docs/08-memory-system.md) | 4 memory types, Sonnet semantic recall, background extraction agent, drift defense |
+| 7 | [Hooks & Extensibility](./en/docs/06-hooks-extensibility.md) | 23 hook events, how to customize Claude Code's behavior without modifying source code |
+| 8 | [Multi-Agent Architecture](./en/docs/07-multi-agent.md) | Sub-agent, Coordinator, and Swarm — design tradeoffs of three multi-agent modes |
+| 9 | [Plan Mode](./en/docs/10-plan-mode.md) | Two entry paths, 5-phase workflow, attachment throttling, Phase 4 A/B experiments, plan file management, approval and permission restoration |
+| 10 | [Code Editing Strategy](./en/docs/05-code-editing-strategy.md) | Why "search-and-replace" over "full file rewrite," how to ensure edit safety |
+| 11 | [Task Management System](./en/docs/15-task-system.md) | File-level storage with concurrency locking, 3-layer change detection, dependency tracking and atomic claiming, multi-agent task coordination, verification nudge |
+| 12 | [Permission & Security](./en/docs/11-permission-security.md) | The complete 5-layer security system, 23 Bash security checks |
+| 13 | [System Prompt Design](./en/docs/14-system-prompt-design.md) | 7-layer progressive prompt architecture, anti-pattern inoculation, blast radius risk framework, 7 agent prompt design principles |
+| 14 | [User Experience](./en/docs/12-user-experience.md) | Why React for terminal UI, streaming output implementation, terminal interaction details |
+| 15 | [Minimal Components](./en/docs/13-minimal-components.md) | The minimum modules needed for a coding agent, the evolution path from 500 lines to 500K |
 
 ## Who should read this?
 
@@ -173,19 +173,19 @@ To prevent conflicts from multiple agents editing the same files, the system use
 ## Reading Recommendations
 
 **Only have 10 minutes?**
-→ Read [Quick Start](./docs/quick-start.md)
+→ Read [Quick Start](./en/docs/quick-start.md)
 
 **Want to understand core principles?**
-→ Read in order: [Agent Loop](./docs/02-agent-loop.md) → [Context Engineering](./docs/03-context-engineering.md) → [Tool System](./docs/04-tool-system.md)
+→ Read in order: [Agent Loop](./en/docs/02-agent-loop.md) → [Context Engineering](./en/docs/03-context-engineering.md) → [Tool System](./en/docs/04-tool-system.md)
 
 **Want to build your own AI agent?**
-→ Start with [Minimal Components](./docs/13-minimal-components.md), then follow **[claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch)** — 8-chapter hands-on tutorial, 1300 lines of code, every step mapped to the real source
+→ Start with [Minimal Components](./en/docs/13-minimal-components.md), then follow **[claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch)** — 8-chapter hands-on tutorial, 1300 lines of code, every step mapped to the real source
 
 **Want to customize Claude Code?**
-→ Read [Hooks & Extensibility](./docs/06-hooks-extensibility.md) + [Memory System](./docs/08-memory-system.md) + [Skills System](./docs/09-skills-system.md)
+→ Read [Hooks & Extensibility](./en/docs/06-hooks-extensibility.md) + [Memory System](./en/docs/08-memory-system.md) + [Skills System](./en/docs/09-skills-system.md)
 
 **Care about security?**
-→ Read [Permission & Security](./docs/11-permission-security.md) + [Code Editing Strategy](./docs/05-code-editing-strategy.md)
+→ Read [Permission & Security](./en/docs/11-permission-security.md) + [Code Editing Strategy](./en/docs/05-code-editing-strategy.md)
 
 ## Contributing
 

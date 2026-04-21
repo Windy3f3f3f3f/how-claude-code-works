@@ -1,4 +1,4 @@
-# 15. Task Management System
+# Chapter 11: Task Management System
 
 > **In one sentence**: Claude Code's task system (TodoV2) uses **file-level storage + locking** to implement a lightweight task manager supporting multi-Agent concurrency, enabling AI Agents to break down complex work, track progress, and coordinate division of labor within a team.
 
@@ -18,7 +18,7 @@ The early `TodoWriteTool` was a simple single JSON file approach — all to-do i
 
 TodoV2 made a critical architectural decision: **one independent file per task**. This refined the lock granularity from "the entire list" to "a single task," forming the foundation for multi-Agent concurrency.
 
-## 15.1 Four Core Tools
+## 11.1 Four Core Tools
 
 The task system exposes four tools to the model, with clear separation of concerns:
 
@@ -86,7 +86,7 @@ Why maintain both directions? Because `TaskList` needs to quickly determine whet
 
 `TaskList` also **automatically filters out completed blockers** — if Task 1 is already completed, Task 2's `blockedBy` won't include it in the display, preventing the model from mistakenly thinking it's still blocked.
 
-## 15.2 File-Level Storage: Built for Concurrency
+## 11.2 File-Level Storage: Built for Concurrency
 
 This is the most critical design decision in the task system and merits in-depth analysis.
 
@@ -208,7 +208,7 @@ Two lock granularities serve different scenarios:
 
 Particularly noteworthy is `claimTaskWithBusyCheck` — it uses a directory-level lock to **atomically** perform the two-step "check if agent is idle + claim task" operation. If task-level locks were used, two agents could simultaneously pass the busy check and both claim successfully, violating the "one agent works on one task at a time" constraint.
 
-## 15.3 Real-Time UI: Three-Layer Change Detection
+## 11.3 Real-Time UI: Three-Layer Change Detection
 
 Task state changes need to be reflected in the terminal UI in real time. Claude Code uses a **three-layer detection mechanism** to ensure no updates are missed:
 
@@ -305,7 +305,7 @@ Terminal space is limited (approximately 10 tasks can be displayed at most). `Ta
 
 Tasks exceeding the display limit are replaced with a summary: "... +2 in progress, 3 pending, 1 completed."
 
-## 15.4 Context Injection: How Tasks Enter the LLM's View
+## 11.4 Context Injection: How Tasks Enter the LLM's View
 
 Once tasks are created, they live on disk — but the LLM can't see disk files. How does task state become part of the model's input? The answer is **two parallel paths**: tool call results + periodic reminder injection.
 
@@ -405,15 +405,15 @@ Task data (~/.claude/tasks/*.json)
 
 The two paths are complementary: tool calls provide on-demand precise information, while periodic reminders prevent the model from losing task context during extended work sessions.
 
-## 15.5 Multi-Agent Coordination
+## 11.5 Multi-Agent Coordination
 
-> For more details on multi-Agent architecture, see [Chapter 7: Multi-Agent Architecture](07-multi-agent.md).
+> For more details on multi-Agent architecture, see [Chapter 8: Multi-Agent Architecture](07-multi-agent.md).
 
 The task system reveals its deepest design sophistication in multi-Agent scenarios.
 
 ### Shared Task List
 
-Through the `taskListId` resolution mechanism (see 15.2), all team members — whether in-process teammates or cross-process teammates (tmux/iTerm2) — point to the same task directory. Tasks created by the leader are immediately visible to teammates.
+Through the `taskListId` resolution mechanism (see 11.2), all team members — whether in-process teammates or cross-process teammates (tmux/iTerm2) — point to the same task directory. Tasks created by the leader are immediately visible to teammates.
 
 ### Automatic Ownership
 
@@ -491,7 +491,7 @@ export async function unassignTeammateTasks(taskListId, agentId) {
 
 This prevents "zombie tasks" — if an Agent crashes or is terminated, the tasks it was working on won't be stuck in `in_progress` forever.
 
-## 15.6 Verification Nudge
+## 11.6 Verification Nudge
 
 This is a clever quality assurance mechanism:
 
@@ -513,9 +513,9 @@ if (allTasksCompleted && totalTasks >= 3 && !hasVerificationTask) {
 
 This feature is double-gated by feature flags (`VERIFICATION_AGENT` + `tengu_hive_evidence`), marking it as an experimental feature under gradual rollout.
 
-## 15.7 Hook Integration
+## 11.7 Hook Integration
 
-> For more details on the Hook system, see [Chapter 6: Hooks and Extensibility](06-hooks-extensibility.md).
+> For more details on the Hook system, see [Chapter 7: Hooks and Extensibility](06-hooks-extensibility.md).
 
 The task system triggers Hooks at two lifecycle points:
 
@@ -531,7 +531,7 @@ The task system triggers Hooks at two lifecycle points:
 
 If a `TaskCreated` Hook returns a blocking error, the system **rolls back** — deleting the just-created task file and returning the error message to the model.
 
-## 15.8 System Prompt Guidance for Tasks
+## 11.8 System Prompt Guidance for Tasks
 
 ### Conditional Enablement
 

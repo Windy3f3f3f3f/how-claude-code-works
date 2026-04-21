@@ -1,4 +1,4 @@
-# Chapter 6: Hooks and Extensibility
+# Chapter 7: Hooks and Extensibility
 
 > Hooks are Claude Code's event-driven extension mechanism — injecting custom logic into key lifecycle points without modifying the source code.
 
@@ -8,13 +8,13 @@ The core design philosophy of Hooks is: **every key point in the Agent Loop expo
 
 **Chapter Roadmap:**
 
-- **6.1 Event Overview**: 27 Hook event types — categorization and trigger timing
-- **6.2 Hook Types**: 4 configurable Hooks (Command/Prompt/Agent/HTTP) + 2 programmatic Hooks (Callback/Function)
-- **6.3 Matcher**: Three-level matching mechanism and cooperation with `if` conditions
-- **6.4 Execution Engine**: 6-stage pipeline — trust check, matching, deduplication, parallel execution, output parsing, result aggregation
-- **6.5–6.9 Advanced Topics**: JSON output protocol, trust model and security, PermissionRequest deep dive, Stop Hook, practical patterns
+- **7.1 Event Overview**: 27 Hook event types — categorization and trigger timing
+- **7.2 Hook Types**: 4 configurable Hooks (Command/Prompt/Agent/HTTP) + 2 programmatic Hooks (Callback/Function)
+- **7.3 Matcher**: Three-level matching mechanism and cooperation with `if` conditions
+- **7.4 Execution Engine**: 6-stage pipeline — trust check, matching, deduplication, parallel execution, output parsing, result aggregation
+- **7.5–7.9 Advanced Topics**: JSON output protocol, trust model and security, PermissionRequest deep dive, Stop Hook, practical patterns
 
-## 6.1 Hook Event Overview
+## 7.1 Hook Event Overview
 
 ### Why These 27 Events?
 
@@ -78,7 +78,7 @@ At first glance, 27 events may seem excessive, but each event has a clear use ca
 - **Environment change events** (FileChanged/CwdChanged/ConfigChange): Respond to external changes, enabling workflows like "auto-lint after file save."
 - **Agent coordination events** (SubagentStart/SubagentStop/TeammateIdle): Inject coordination logic in multi-Agent scenarios.
 
-## 6.2 Hook Types
+## 7.2 Hook Types
 
 Claude Code supports four configurable Hook types and two programmatic Hook types. The first four can be written in `settings.json`, while the latter two are only used internally within the SDK/plugins.
 
@@ -138,7 +138,7 @@ The structure is straightforward: the `hooks` object's keys are event names (e.g
 2. **Input passing**: Serializes the Hook's structured input (including session_id, tool_name, tool_input, etc.) as JSON, passing it to the child process via **stdin**. This means Hook scripts can get full context information by reading stdin.
 3. **Environment variables**: The child process inherits current environment variables. For plugin Hooks, `CLAUDE_PLUGIN_ROOT` (plugin root directory) and `CLAUDE_PLUGIN_DATA` (plugin data directory) are additionally injected, and `${CLAUDE_PLUGIN_ROOT}` placeholders in commands are also replaced.
 4. **Output collection**: Waits for process exit, collects stdout and stderr.
-5. **Result parsing**: Determines Hook result based on exit code and stdout content (see Section 6.4 for details).
+5. **Result parsing**: Determines Hook result based on exit code and stdout content (see Section 7.4 for details).
 
 **Applicable scenarios**: Logging, file syncing, CI/CD triggering, shell script integration, custom linters.
 
@@ -259,7 +259,7 @@ if (matchedHooks.every(m => m.hook.type === 'callback' || m.hook.type === 'funct
 
 This optimization reduces internal Hook overhead from ~6µs to ~1.8µs (-70%). Internal Hooks (such as file access tracking, commit attribution) trigger on every tool call, and the cumulative difference is significant.
 
-### 6. Function Hook — Session-Scoped Only
+### 7. Function Hook — Session-Scoped Only
 
 Similar to Callback, but scoped to a specific session, preventing cross-Agent leakage.
 
@@ -286,7 +286,7 @@ Several fields appear across multiple Hook types and deserve separate explanatio
 
 **`statusMessage` field**: Custom message displayed in the spinner while the Hook executes. The default shows the command content, but for complex commands or those containing sensitive information, a custom message is more user-friendly.
 
-## 6.3 Matcher
+## 7.3 Matcher
 
 Matcher is the Hook system's routing mechanism — determining whether a Hook should respond to a given event.
 
@@ -391,7 +391,7 @@ The matching process for this configuration:
 
 **Performance critical**: Both layers of filtering complete before spawning child processes. If a PreToolUse event triggers 10 Hook configurations but only 2 pass the dual matcher + if filtering, the system will only spawn 2 processes. This is "zero-cost abstraction" — Hooks that don't trigger have absolutely no runtime overhead.
 
-## 6.4 Hook Execution Engine
+## 7.4 Hook Execution Engine
 
 Key file: `src/utils/hooks.ts` (core scheduling)
 
@@ -678,7 +678,7 @@ Aggregation is performed in a streaming fashion via `for await ... of all(hookPr
 
 The SessionEnd timeout is extremely short (1.5 seconds) because the user is exiting and should not be blocked by a Hook. It can be overridden via the environment variable `CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS`.
 
-## 6.5 Hook JSON Output Schema
+## 7.5 Hook JSON Output Schema
 
 Hooks control Claude Code's behavior by outputting JSON to stdout. The complete schema is defined in `src/types/hooks.ts` and validated with Zod.
 
@@ -863,7 +863,7 @@ Taking a PreToolUse Hook that denies an `rm -rf` command as an example, tracing 
    "PreToolUse:Bash hook error: rm -rf command is prohibited by security policy"
 ```
 
-## 6.6 Trust Model and Security
+## 7.6 Trust Model and Security
 ### Hook Configuration Snapshot
 
 `captureHooksConfigSnapshot()` freezes the Hook configuration at **startup**. This means:
@@ -898,7 +898,7 @@ The three policy modes are designed for different enterprise security requiremen
 
 **The scope of `allowManagedHooksOnly`** is broad — it not only blocks Hooks from user settings and project settings, but also blocks plugin Hooks (skipped when `pluginRoot` exists) and session Hooks (including Hooks in Agent/Skill frontmatter). However, it **does not block** SDK-registered callback Hooks (these are runtime internal mechanisms, not user configurations).
 
-## 6.7 PermissionRequest Hook Deep Dive
+## 7.7 PermissionRequest Hook Deep Dive
 
 This is the most powerful Hook type — it can **programmatically control tool permissions** and participates in the racing mechanism within the permission system chapter.
 
@@ -972,7 +972,7 @@ sequenceDiagram
     Note over Guard: Hook completes first → Hook's decision takes effect
 ```
 
-## 6.8 Stop Hook: Post-Sampling Validation
+## 7.8 Stop Hook: Post-Sampling Validation
 
 Stop Hook triggers when the model decides to stop the loop (i.e., when the model returns plain text rather than a tool call), and can **prevent termination** to force continuation:
 
@@ -1006,7 +1006,7 @@ This enables automated workflows to achieve "can only stop when done" semantics.
 
 Each time the model is about to stop, tests are automatically run. Tests pass → allow stop; tests fail → exit code 2 → model receives "Tests failed" message → forced to continue fixing.
 
-## 6.9 Practical Patterns
+## 7.9 Practical Patterns
 
 ### Pattern 1: CI Build Check (asyncRewake)
 
@@ -1132,7 +1132,7 @@ Workflow: After each file edit, tests run automatically in the background. Tests
 }
 ```
 
-## 6.10 Hooks and Skills/Plugins Collaboration
+## 7.10 Hooks and Skills/Plugins Collaboration
 
 ### Skill-Level Hooks
 
@@ -1190,7 +1190,7 @@ function hookDedupKey(m: MatchedHook, payload: string): string {
 
 `new Map(entries)` retains the last entry for duplicate keys (last-wins), which for settings Hooks means later-merged configurations override earlier-merged ones.
 
-## 6.11 Design Insights
+## 7.11 Design Insights
 
 ### 1. Event-Driven + Dual-Layer Matching = Precise Control
 
@@ -1215,10 +1215,10 @@ The Hook system has three layers of optimization on the hot path:
 
 Historical vulnerabilities have proven that "most Hooks need to be trusted" is insufficient — it must be "all Hooks need to be trusted." Configuration snapshots, trust checks, environment variable whitelists, CRLF injection protection — each layer assumes attackers can control the input of the previous layer.
 
-### 6. Hooks Are Cross-Cutting Concerns of the Agent Loop
+### 7. Hooks Are Cross-Cutting Concerns of the Agent Loop
 
 The Hook system is essentially an AOP (Aspect-Oriented Programming) layer for the Agent Loop. It does not modify any logic of the core loop, but instead injects cross-cutting logic at key points. This keeps the core loop concise while extension capabilities are achieved through the Hook system. From an architectural perspective, the Hook system is the bridge connecting Claude Code's internal mechanisms with the external ecosystem (enterprise infrastructure, CI/CD, security policies).
 
 ---
 
-Previous chapter: [Code Editing Strategy](/en/docs/05-code-editing-strategy.md) | Next chapter: [Multi-Agent Architecture](/en/docs/07-multi-agent.md)
+Previous chapter: [Memory System](/en/docs/08-memory-system.md) | Next chapter: [Multi-Agent Architecture](/en/docs/07-multi-agent.md)

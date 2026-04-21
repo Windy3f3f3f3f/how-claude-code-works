@@ -1,4 +1,4 @@
-# 15. 任务管理系统
+# 第 11 章：任务管理系统
 
 > **一句话总结**：Claude Code 的任务系统（TodoV2）用**文件级存储 + 锁机制**实现了一个支持多 Agent 并发的轻量任务管理器，让 AI Agent 能拆解复杂工作、追踪进度、并在团队中协调分工。
 
@@ -18,7 +18,7 @@
 
 TodoV2 做了一个关键的架构决策：**每个任务一个独立文件**。这让锁粒度从「整个列表」细化到了「单个任务」，是支撑多 Agent 并发的基础。
 
-## 15.1 四个核心工具
+## 11.1 四个核心工具
 
 任务系统通过四个工具暴露给模型，分工明确：
 
@@ -86,7 +86,7 @@ export async function blockTask(taskListId, fromTaskId, toTaskId) {
 
 `TaskList` 还会**自动过滤已完成的 blocker**——如果任务 1 已经 completed，任务 2 的 `blockedBy` 在显示时不会包含它，避免误导模型以为仍然被阻塞。
 
-## 15.2 文件级存储：为并发而生
+## 11.2 文件级存储：为并发而生
 
 这是任务系统最核心的设计决策，值得深入分析。
 
@@ -208,7 +208,7 @@ const LOCK_OPTIONS = {
 
 特别值得一提的是 `claimTaskWithBusyCheck`——它用目录级锁来**原子地**执行「检查 agent 是否空闲 + 认领任务」两步操作。如果用任务级锁，两个 agent 可能同时通过忙碌检查然后都认领成功，破坏了「一个 agent 同时只做一件事」的约束。
 
-## 15.3 实时 UI：三层变更检测
+## 11.3 实时 UI：三层变更检测
 
 任务状态的变化需要实时反映在终端 UI 中。Claude Code 用了**三层检测机制**来确保不遗漏任何更新：
 
@@ -305,7 +305,7 @@ Singleton 模式让 watcher 的生命周期与「是否有人在看」解耦。R
 
 超出显示限制的任务用摘要代替：「... +2 in progress, 3 pending, 1 completed」。
 
-## 15.4 上下文注入：任务如何进入 LLM 视野
+## 11.4 上下文注入：任务如何进入 LLM 视野
 
 任务创建后存在磁盘上，但 LLM 看不到磁盘文件。任务状态是如何成为模型输入的一部分的？答案是**两条路径并行**：工具调用结果 + 周期性提醒注入。
 
@@ -405,15 +405,15 @@ new tasks and TaskUpdate to update task status...`
 
 两条路径互补：工具调用提供按需查询的精确信息，周期性提醒防止模型在长时间工作中遗忘任务上下文。
 
-## 15.5 多 Agent 协调
+## 11.5 多 Agent 协调
 
-> 更多多 Agent 架构细节请参考 [第 7 章：多 Agent 架构](07-multi-agent.md)。
+> 更多多 Agent 架构细节请参考 [第 8 章：多 Agent 架构](07-multi-agent.md)。
 
 任务系统在多 Agent 场景下展现出最大的设计深度。
 
 ### 共享任务列表
 
-通过 `taskListId` 解析机制（见 15.2），团队中的所有成员——无论是进程内队友（in-process teammates）还是进程间队友（tmux/iTerm2）——都指向同一个任务目录。Leader 创建的任务，teammate 立刻可见。
+通过 `taskListId` 解析机制（见 11.2），团队中的所有成员——无论是进程内队友（in-process teammates）还是进程间队友（tmux/iTerm2）——都指向同一个任务目录。Leader 创建的任务，teammate 立刻可见。
 
 ### 自动 Ownership
 
@@ -491,7 +491,7 @@ export async function unassignTeammateTasks(taskListId, agentId) {
 
 这防止了「僵尸任务」——一个 Agent 崩溃或被终止后，它正在做的任务不会永远卡在 `in_progress` 状态。
 
-## 15.6 验证提醒（Verification Nudge）
+## 11.6 验证提醒（Verification Nudge）
 
 这是一个巧妙的质量保证机制：
 
@@ -513,9 +513,9 @@ if (allTasksCompleted && totalTasks >= 3 && !hasVerificationTask) {
 
 这个功能通过 feature flag 双重控制（`VERIFICATION_AGENT` + `tengu_hive_evidence`），属于渐进发布的实验性功能。
 
-## 15.7 Hook 集成
+## 11.7 Hook 集成
 
-> 更多 Hook 系统细节请参考 [第 6 章：Hooks 与可扩展性](06-hooks-extensibility.md)。
+> 更多 Hook 系统细节请参考 [第 7 章：Hooks 与可扩展性](06-hooks-extensibility.md)。
 
 任务系统在两个生命周期节点触发 Hook：
 
@@ -531,7 +531,7 @@ if (allTasksCompleted && totalTasks >= 3 && !hasVerificationTask) {
 
 如果 `TaskCreated` Hook 返回阻塞错误，系统会**回滚**——删除刚创建的任务文件，并将错误信息返回给模型。
 
-## 15.8 系统提示词中的任务引导
+## 11.8 系统提示词中的任务引导
 
 ### 条件启用
 

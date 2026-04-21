@@ -1,8 +1,8 @@
-# Chapter 13: Minimal Necessary Components
+# Chapter 15: Minimal Necessary Components
 
 > From 512K+ lines of source code to a runnable minimal coding agent -- what do you really need?
 
-## 13.1 Why the "Minimal Necessary" Perspective
+## 15.1 Why the "Minimal Necessary" Perspective
 
 Claude Code is a production-grade system. Its 512K+ lines of code cover everything from OAuth to MCP to Vim mode. If you try to understand the essence of a coding agent by reading all the source code, you will get lost in massive amounts of edge case handling, UI optimization, and platform adaptation code. It is like trying to understand the principles of "flight" by studying the complete blueprints of a Boeing 747 -- what you need is to first understand Bernoulli's equation and the four fundamental forces.
 
@@ -15,11 +15,11 @@ The [claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from
 
 **Reading guide**:
 
-- **12.2.1 - 12.2.3** (Prompt Orchestration, Tool Registry, Agent Loop) form the **core loop layer** -- these three components constitute the skeleton of the agent
-- **12.2.4 - 12.2.6** (File Operations, Shell Execution, Edit Strategy) form the **capability layer** -- giving the agent concrete programming abilities
-- **12.2.7** (CLI UX) is the **interaction layer** -- enabling humans to use this agent
+- **15.2.1 - 15.2.3** (Prompt Orchestration, Tool Registry, Agent Loop) form the **core loop layer** -- these three components constitute the skeleton of the agent
+- **15.2.4 - 15.2.6** (File Operations, Shell Execution, Edit Strategy) form the **capability layer** -- giving the agent concrete programming abilities
+- **15.2.7** (CLI UX) is the **interaction layer** -- enabling humans to use this agent
 
-## 13.2 The Seven Minimal Necessary Components
+## 15.2 The Seven Minimal Necessary Components
 
 ```mermaid
 graph TD
@@ -660,7 +660,7 @@ The regex `/\brm\s/` can match this. But what about this?
 eval "$(echo cm0gLXJmIC8= | base64 -d)"
 ```
 
-This is base64-encoded `rm -rf /`, completely undetectable by regex. AST analysis can identify the pattern of `eval` + command substitution and flag it as potentially dangerous (see [Chapter 11: Permissions and Security](/en/docs/11-permission-security.md) for details).
+This is base64-encoded `rm -rf /`, completely undetectable by regex. AST analysis can identify the pattern of `eval` + command substitution and flag it as potentially dangerous (see [Chapter 12: Permissions and Security](/en/docs/11-permission-security.md) for details).
 
 **Command Classification**: Claude Code categorizes commands into six classes: search/read/list/neutral/write/destructive. Read-only categories (search, read, list) can execute without permission. This dramatically reduces the frequency of permission confirmation dialogs -- in a typical programming task, commands like `grep`, `find`, `ls`, `git log` account for over 60% of total invocations. If confirmation were required every time, the user experience would be terrible (this is the "permission fatigue" problem).
 
@@ -739,7 +739,7 @@ Note the division of labor between these two tools: `edit_file` is for modifying
 
 **`readFileState` Integration**: Claude Code maintains a file read state cache. When the model calls `edit_file`, the system checks whether this file has been read before and whether it has been modified since reading. If the model tries to edit a file it has never read (blind editing), the system refuses. If the file has been externally modified since it was read, the system warns. These two checks greatly reduce editing errors and are one of the most worthwhile enhancements to add when going from the minimal version to the production version.
 
-**Diff Generation and Colorized Display**: After each edit, Claude Code generates and displays a colorized diff (deleted lines in red, added lines in green). This doesn't change functionality but greatly improves user trust -- users can intuitively see "what the agent changed" without needing to compare files themselves. Transparency is a key factor in building user trust in agents (see [Chapter 5: Code Editing Strategy](/en/docs/05-code-editing-strategy.md) for details).
+**Diff Generation and Colorized Display**: After each edit, Claude Code generates and displays a colorized diff (deleted lines in red, added lines in green). This doesn't change functionality but greatly improves user trust -- users can intuitively see "what the agent changed" without needing to compare files themselves. Transparency is a key factor in building user trust in agents (see [Chapter 10: Code Editing Strategy](/en/docs/05-code-editing-strategy.md) for details).
 
 ### Component 7: CLI UX (Command-Line Interaction)
 
@@ -869,7 +869,7 @@ The `--resume` flag loads the most recent session, restoring the complete messag
 
 **OSC 8 Hyperlinks**: File paths in the output (like `src/utils/helper.ts:42`) are rendered as terminal hyperlinks. In supported terminals (iTerm2, VSCode terminal, etc.), clicking jumps directly to the corresponding file and line number. This small feature has low implementation cost (a few dozen lines of code) but greatly improves the daily workflow -- users don't need to copy paths and manually open files.
 
-## 13.3 From Minimal to Production: Progressive Enhancement Roadmap
+## 15.3 From Minimal to Production: Progressive Enhancement Roadmap
 
 ```mermaid
 graph LR
@@ -921,11 +921,11 @@ Tools: `read_file`, `write_file`, `run_shell` -- just these three form a complet
 
 **MCP Protocol Integration**: Through Model Context Protocol, supports external tool extensions (database queries, sending Slack messages, Jira operations, etc.). This extends the agent's capability boundary from "local file operations" to "any external service."
 
-**Multi-Agent** (AgentTool): Decomposes complex tasks for sub-agents to execute in parallel. The main agent is responsible for planning and coordination; sub-agents are responsible for concrete execution. This is the key architecture for handling large project-level tasks (see [Chapter 7: Multi-Agent Architecture](/en/docs/07-multi-agent.md) for details).
+**Multi-Agent** (AgentTool): Decomposes complex tasks for sub-agents to execute in parallel. The main agent is responsible for planning and coordination; sub-agents are responsible for concrete execution. This is the key architecture for handling large project-level tasks (see [Chapter 8: Multi-Agent Architecture](/en/docs/07-multi-agent.md) for details).
 
 **Prompt Caching Optimization**: Carefully arranges the content order of system prompts to maximize API prefix cache hit rates. In high-frequency use scenarios, this can save 30-50% of API costs.
 
-## 13.4 The claude-code-from-scratch Project
+## 15.4 The claude-code-from-scratch Project
 
 The [claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch) project provides a runnable minimal implementation (~3000 lines of core code) to help you:
 
@@ -940,7 +940,7 @@ The project also provides **dual backend support** (Anthropic native + OpenAI-co
 
 For detailed step-by-step tutorials, please refer to the [claude-code-from-scratch documentation](https://github.com/Windy3f3f3f3f/claude-code-from-scratch).
 
-## 13.5 Key Differences Between Minimal and Production Versions
+## 15.5 Key Differences Between Minimal and Production Versions
 
 | Dimension | Minimal Version | Claude Code Production Version |
 |-----------|----------------|-------------------------------|
@@ -960,7 +960,7 @@ For detailed step-by-step tutorials, please refer to the [claude-code-from-scrat
 | Session Management | JSON file persistence | JSONL transcripts + snapshot recovery |
 | Token Tracking | Simple counting | Budget management + cost display + carry-over across compressions |
 
-## 13.6 Core Insights
+## 15.6 Core Insights
 
 The biggest misconception in building a coding agent is thinking "writing a good prompt is enough." In reality:
 
@@ -981,3 +981,5 @@ The biggest misconception in building a coding agent is thinking "writing a good
 ---
 
 > **Hands-on Practice**: [claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch) is the complete implementation of this chapter's "minimal necessary components" philosophy -- ~3,000 lines of TypeScript, covering the Agent loop, tools, system prompts, streaming output, memory, skills, multi-Agent, and permission rules. Run with `npm run build && npm start`.
+
+Previous chapter: [User Experience Design](/en/docs/12-user-experience.md) | Return to: [Quick Start](/en/docs/quick-start.md)

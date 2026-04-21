@@ -1,8 +1,8 @@
-# Chapter 10: Plan Mode
+# Chapter 9: Plan Mode
 
 > Think before you act — Plan Mode is the only mechanism in Claude Code where the model **voluntarily downgrades its own permissions** to earn user trust.
 
-## 10.1 Why Plan Mode Exists
+## 9.1 Why Plan Mode Exists
 
 Imagine this scenario: you ask Claude Code to "refactor the entire authentication system." Without hesitation, it starts modifying files — changes 12 files, deletes 3 functions, introduces a JWT library you never wanted. Your only recourse is `git checkout .` and start over.
 
@@ -22,7 +22,7 @@ Key files:
 | `src/utils/permissions/permissionSetup.ts` | ~60 | Permission context preparation and restoration |
 | `src/bootstrap/state.ts:1349-1470` | ~120 | Plan Mode global state |
 
-## 10.2 The Big Picture: A Complete Plan Mode Flow
+## 9.2 The Big Picture: A Complete Plan Mode Flow
 
 ```mermaid
 sequenceDiagram
@@ -59,7 +59,7 @@ sequenceDiagram
 
 The key to the entire flow is **symmetry of state transitions**: save the original mode on entry (`prePlanMode`), restore it precisely on exit. This guarantees Plan Mode is a "nestable insertion layer" — regardless of whether you were in default, auto, or bypassPermissions mode, Plan Mode returns you seamlessly to your previous state.
 
-## 10.3 Entering Plan Mode: Two Paths
+## 9.3 Entering Plan Mode: Two Paths
 
 There are two ways to enter Plan Mode, but both converge on the same state transition function:
 
@@ -71,7 +71,7 @@ graph LR
     D --> E["setMode: 'plan'"]
 ```
 
-### 10.3.1 User-Initiated: `/plan` Command
+### 9.3.1 User-Initiated: `/plan` Command
 
 When the user types `/plan` or `/plan refactor the auth system` in the REPL, it triggers `src/commands/plan/plan.tsx:64-121`:
 
@@ -92,7 +92,7 @@ if (currentMode !== 'plan') {
 
 If the command includes a description (e.g., `/plan refactor the auth system`), the description is simultaneously submitted as a user message to the model, triggering a full query loop — the model receives this message in plan mode and begins exploring.
 
-### 10.3.2 Model-Initiated: EnterPlanMode Tool
+### 9.3.2 Model-Initiated: EnterPlanMode Tool
 
 This is the more common path. When the model determines the current task is sufficiently complex, it **proactively calls** the `EnterPlanMode` tool to request entering plan mode.
 
@@ -124,7 +124,7 @@ async call(_input, context) {
 
 Note the `context.agentId` check — this is a critical design constraint: **sub-agents cannot enter Plan Mode**. The reason is straightforward: Plan Mode requires user interaction (approving the plan), but sub-agents run in the background without direct user interaction capability. If a sub-agent were allowed to enter Plan Mode, it would be stuck forever waiting for approval.
 
-### 10.3.3 Tool Prompt: Guiding the Model on When to Enter
+### 9.3.3 Tool Prompt: Guiding the Model on When to Enter
 
 How does the model know when it should enter Plan Mode? The answer lies in the tool's prompt. Claude Code uses carefully crafted prompts to guide the model's judgment.
 
@@ -142,11 +142,11 @@ For **external users** (`src/tools/EnterPlanModeTool/prompt.ts:16-99`), the prom
 
 For **internal users** (ant), the prompt is more conservative — it only suggests entering Plan Mode when there's "genuine architectural ambiguity," avoiding excessive planning that slows velocity. This reflects a practical observation: **internal users are typically more familiar with the codebase and need less "plan before act" protection**.
 
-## 10.4 System Message Injection in Plan Mode
+## 9.4 System Message Injection in Plan Mode
 
 After entering Plan Mode, Claude Code uses the **Attachment System** to inject instructions into each conversation turn, telling the model "you can only read, not write" and "here's the workflow you should follow."
 
-### 10.4.1 Attachment Throttling Mechanism
+### 9.4.1 Attachment Throttling Mechanism
 
 Instructions aren't injected in full every turn — that would waste too many tokens. Plan Mode system messages are essentially **behavioral guardrails** for the model ("you can only read, not write"), but repeating the full instructions every turn not only wastes tokens, it can also cause the model to develop "fatigue" toward those instructions — overly frequent repetition actually weakens their effectiveness. So Claude Code employs a **progressive reminder strategy**: provide full context in the first turn to establish rule awareness, trust the model's short-term memory for the next several turns, then periodically refresh the model's awareness of the current mode with lightweight reminders.
 
@@ -172,7 +172,7 @@ export const PLAN_MODE_ATTACHMENT_CONFIG = {
 
 This means full instructions appear roughly every 25 turns (5 × 5), while the rest use ultra-short sparse reminders (~300 characters) to maintain the model's awareness of the current mode.
 
-### 10.4.2 Two Workflow Modes
+### 9.4.2 Two Workflow Modes
 
 Claude Code actually has **two entirely different** Plan Mode workflows, switched via feature gates.
 
@@ -248,7 +248,7 @@ Iterative mode: "Start by quickly scanning a few key files...
   → Encourages quick interaction, progressive deepening
 ```
 
-### 10.4.3 Phase 4's Four Experiment Variants
+### 9.4.3 Phase 4's Four Experiment Variants
 
 Phase 4 (format requirements for the final plan) is an **ongoing A/B experiment** (`tengu_pewter_ledger`), with four variants (`src/utils/messages.ts:3156-3205`):
 
@@ -261,9 +261,9 @@ Phase 4 (format requirements for the final plan) is an **ongoing A/B experiment*
 
 > The motivation for this experiment comes from production data: baseline (control) plan files have a p50 of 4,906 characters, p90 of 11,617 characters, and a mean of 6,207 characters. Opus output costs 5x its input price, so overly long plan files directly inflate costs. Moreover, **rejection rate correlates positively with plan length**: plans <2K have a 20% rejection rate, while plans >20K hit 50% rejection. In other words, **the longer the plan, the less satisfied the user**.
 
-## 10.5 Plan File Management
+## 9.5 Plan File Management
 
-### 10.5.1 File Naming and Storage
+### 9.5.1 File Naming and Storage
 
 Each session's plan file is stored in the `~/.claude/plans/` directory, with a randomly generated word slug as the filename:
 
@@ -297,7 +297,7 @@ export function getPlanSlug(sessionId?: SessionId): string {
 
 The slug is cached within the session (`planSlugCache: Map<SessionId, string>`), ensuring the same session always writes to the same file. Why word slugs instead of UUIDs? Because users may need to manually open and edit this file — `bold-eagle.md` is far more recognizable and memorable than `a3f7b2c1-4d5e-6f78.md`.
 
-### 10.5.2 Resume and Fork
+### 9.5.2 Resume and Fork
 
 When a user resumes a previous session, the corresponding plan file needs to be recovered. The reason it needs as many as 5 recovery layers is fundamentally because **local sessions and remote sessions (CCR) have entirely different file persistence capabilities**: local users' plan files are stored safely on disk, making recovery straightforward; but remote users' pods can be reclaimed at any time, meaning the file may no longer exist, so the system must attempt recovery from various locations in the transcript.
 
@@ -315,11 +315,11 @@ Why so many recovery strategies? Because **remote sessions (CCR) don't persist f
 
 Forking a session (`copyPlanForFork()`, `src/utils/plans.ts:239-264`) is simpler but has one critical detail: **generate a new slug**. If the original slug were reused, the original and forked sessions would write to the same file — causing mutual overwrites.
 
-## 10.6 Exiting Plan Mode: Approval and Permission Restoration
+## 9.6 Exiting Plan Mode: Approval and Permission Restoration
 
 Exiting is the most complex part of Plan Mode, as it must simultaneously handle permission restoration, user approval, plan synchronization, and multiple execution contexts.
 
-### 10.6.1 Validation: Must Be in Plan Mode
+### 9.6.1 Validation: Must Be in Plan Mode
 
 The first check in `ExitPlanModeV2Tool` (`src/tools/ExitPlanModeTool/ExitPlanModeV2Tool.ts:195-219`):
 
@@ -349,7 +349,7 @@ Why is this check necessary? Because **the model sometimes "forgets" it has alre
 
 This check prevents state corruption from duplicate exits.
 
-### 10.6.2 User Approval
+### 9.6.2 User Approval
 
 The permission request dialog is triggered through `checkPermissions()` (`src/tools/ExitPlanModeTool/ExitPlanModeV2Tool.ts:221-239`):
 
@@ -371,7 +371,7 @@ In the approval dialog, the user can:
 - **Edit then approve**: Modify the plan content before approving (passed back via `permissionResult.updatedInput.plan`)
 - **Reject**: Stay in Plan Mode and continue refining the plan
 
-### 10.6.3 The Precise Logic of Permission Restoration
+### 9.6.3 The Precise Logic of Permission Restoration
 
 The permission restoration in the `call()` method is the most intricate part (`src/tools/ExitPlanModeTool/ExitPlanModeV2Tool.ts:357-403`):
 
@@ -415,7 +415,7 @@ context.setAppState(prev => {
 
 This logic handles a very nuanced edge case: **circuit breaker defense**. Suppose the user was in auto mode, and the system saved `prePlanMode: 'auto'` when entering Plan Mode. But during Plan Mode, the auto mode circuit breaker tripped (e.g., consecutive failures exceeded the threshold), and the auto gate was disabled. If we blindly restored to `auto`, we'd be bypassing the circuit breaker — which is not allowed. So it first checks `isAutoModeGateEnabled()`, falling back to `default` if the gate has been closed.
 
-### 10.6.4 Four Result Message Types
+### 9.6.4 Four Result Message Types
 
 `mapToolResultToToolResultBlockParam()` returns 4 different messages depending on context (`src/tools/ExitPlanModeTool/ExitPlanModeV2Tool.ts:419-492`):
 
@@ -428,7 +428,7 @@ This logic handles a very nuanced edge case: **circuit breaker defense**. Suppos
 
 The normal approval message **echoes the complete plan text back** — this isn't redundant. It ensures the model can directly reference the plan content during implementation without re-reading the plan file. If the user edited the plan, the tag changes to `"Approved Plan (edited by user)"`, alerting the model to the user's modifications.
 
-## 10.7 Global View of State Management
+## 9.7 Global View of State Management
 
 Plan Mode state is distributed across multiple locations, but transitions are unified through the `handlePlanModeTransition()` function (`src/bootstrap/state.ts:1349-1363`):
 
@@ -466,7 +466,7 @@ STATE = {
 
 `needsPlanModeExitAttachment` and `needsAutoModeExitAttachment` are **fire-once flags**. They are cleared immediately after being consumed, ensuring exit messages are injected exactly once. This design prevents the "exited plan mode" notification from repeating on every subsequent turn.
 
-## 10.8 Re-entering Plan Mode
+## 9.8 Re-entering Plan Mode
 
 If a user enters Plan Mode a second time in the same session, the system injects a special re-entry guide (`src/utils/messages.ts:3829-3847`):
 
@@ -487,9 +487,9 @@ Before proceeding with any new planning, you should:
 
 This guide addresses a real problem: the model might **assume the old plan is still valid**. Explicitly requiring "read the old plan first, then decide if it's relevant" prevents the model from continuing on top of an outdated plan.
 
-## 10.9 Interactions with Other Systems
+## 9.9 Interactions with Other Systems
 
-### 10.9.1 With the Permission System
+### 9.9.1 With the Permission System
 
 Plan Mode is deeply integrated with the [Permission System](/en/docs/11-permission-security.md). The behavior of `prepareContextForPlanMode()` depends on the mode before entry:
 
@@ -508,11 +508,11 @@ Entering from auto (and shouldPlanUseAutoMode = true):
   → Save prePlanMode = 'auto'
 ```
 
-### 10.9.2 With the Multi-Agent System
+### 9.9.2 With the Multi-Agent System
 
 Plan Mode provides dedicated instructions for sub-agents in the [Multi-Agent Architecture](/en/docs/07-multi-agent.md) (`src/utils/messages.ts:3399-3417`). Sub-agent plan files use a separate namespace (`{slug}-agent-{agentId}.md`), avoiding conflicts with the main session's plan file.
 
-### 10.9.3 With normalizeToolInput
+### 9.9.3 With normalizeToolInput
 
 In `src/utils/api.ts:572-580`, `normalizeToolInput()` gives `ExitPlanMode` special treatment — reading the plan content from disk and injecting it into the tool input:
 
@@ -527,7 +527,7 @@ case EXIT_PLAN_MODE_V2_TOOL_NAME: {
 
 The injected `plan` and `planFilePath` fields are consumed by hooks and SDK consumers, but are stripped by `normalizeToolInputForAPI()` before being sent to the API — because these fields don't exist in the API schema.
 
-## 10.10 Design Insights
+## 9.10 Design Insights
 
 1. **Voluntarily trading power for trust**: Plan Mode is the only mechanism in all of Claude Code where the model "voluntarily requests to lower its own permissions." This design inverts the traditional "I need permissions" pattern into "I voluntarily give up permissions to earn your trust" — when the model judges a task is complex, it chooses to bind its own hands, using only its eyes, until you say "go ahead."
 
@@ -543,4 +543,4 @@ The injected `plan` and `planFilePath` fields are consumed by hooks and SDK cons
 
 > **Hands-on practice**: Try typing `/plan refactor the most complex module in your project` in Claude Code, and observe how the model explores the code, generates a plan, and waits for your approval. Then edit the plan file (`~/.claude/plans/*.md`) before approving, and watch how the model handles your modifications.
 
-Previous chapter: [Skills System](/en/docs/09-skills-system.md) | Next chapter: [Permissions & Security](/en/docs/11-permission-security.md)
+Previous chapter: [Multi-Agent Architecture](/en/docs/07-multi-agent.md) | Next chapter: [Code Editing Strategy](/en/docs/05-code-editing-strategy.md)

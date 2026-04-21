@@ -1,8 +1,8 @@
-# Chapter 11: Permissions and Security
+# Chapter 12: Permissions and Security
 
 > Claude Code executes code in the user's real environment — security is not an optional add-on, but a cornerstone of the architecture.
 
-## 11.1 Defense in Depth Architecture
+## 12.1 Defense in Depth Architecture
 
 Claude Code adopts a **Defense in Depth** strategy. Multiple independent security layers collectively protect the user's environment — even if one layer is bypassed, the others remain effective.
 
@@ -20,23 +20,23 @@ graph TD
 
 **Layer 1 — Workspace Trust Confirmation (Trust Dialog)**: When you first launch Claude Code in a directory, the system displays a trust confirmation dialog. This is the first line of defense: if the user chooses not to trust the current workspace, the system will **disable all project-level Hooks and custom settings**. This prevents a common attack scenario — a malicious repository pre-plants Hook scripts in the `.claude/` directory, which would automatically execute as soon as a user clones it. Only after the user explicitly trusts the workspace will project-level configurations take effect.
 
-**Layer 2 — Permission Mode**: A global policy switch that determines whether the system's default behavior is "ask", "auto-allow", or "auto-deny". See [11.2 Permission Modes](#112-permission-modes) for details.
+**Layer 2 — Permission Mode**: A global policy switch that determines whether the system's default behavior is "ask", "auto-allow", or "auto-deny". See [12.2 Permission Modes](#122-permission-modes) for details.
 
-**Layer 3 — Permission Rule Matching**: Users and administrators can predefine allow/deny/ask rule lists for precise control over specific tools or specific commands. For example, `Bash(npm test:*)` allows all npm test related commands to pass automatically. See [11.3 Permission Rule System](#113-permission-rule-system) for details.
+**Layer 3 — Permission Rule Matching**: Users and administrators can predefine allow/deny/ask rule lists for precise control over specific tools or specific commands. For example, `Bash(npm test:*)` allows all npm test related commands to pass automatically. See [12.3 Permission Rule System](#123-permission-rule-system) for details.
 
-**Layer 4 — Bash Multi-layer Security**: Bash has the largest attack surface among all tools, so it has an independent multi-layer security verification system, including tree-sitter AST parsing, 23 static security checks, path constraint validation, and more. See [11.6 Multi-layer Security Verification for Bash Commands](#116-multi-layer-security-verification-for-bash-commands) for details.
+**Layer 4 — Bash Multi-layer Security**: Bash has the largest attack surface among all tools, so it has an independent multi-layer security verification system, including tree-sitter AST parsing, 23 static security checks, path constraint validation, and more. See [12.6 Multi-layer Security Verification for Bash Commands](#126-multi-layer-security-verification-for-bash-commands) for details.
 
 **Layer 5 — Tool-level Security**: Each tool declares its own security attributes and implements dedicated validation logic. The `validateInput` method validates input legality before permission checks (e.g., checking file path format); the `checkPermissions` method executes tool-specific security logic (e.g., the file editing tool checks whether the target is a dangerous file). Read-only tools (such as `Read`, `Glob`, `Grep`) can pass automatically in most modes.
 
-**Layer 6 — Sandbox and Isolation**: This layer provides two isolation mechanisms. **Sandbox** restricts Bash commands' filesystem, network, and process permissions through OS-level process isolation (Seatbelt on macOS, namespaces on Linux). **Git Worktree** provides file-level isolation — sub-Agents work in independent worktrees and are automatically cleaned up after completion if there are no substantive modifications, preventing sub-Agents' experimental operations from polluting the main working directory. See [11.9 Sandbox Design](#119-sandbox-design) for details.
+**Layer 6 — Sandbox and Isolation**: This layer provides two isolation mechanisms. **Sandbox** restricts Bash commands' filesystem, network, and process permissions through OS-level process isolation (Seatbelt on macOS, namespaces on Linux). **Git Worktree** provides file-level isolation — sub-Agents work in independent worktrees and are automatically cleaned up after completion if there are no substantive modifications, preventing sub-Agents' experimental operations from polluting the main working directory. See [12.9 Sandbox Design](#129-sandbox-design) for details.
 
-**Layer 7 — User Confirmation**: When all preceding automated layers cannot make a decision, a human makes the final call. The interactive dialog simultaneously launches Hook checks and ML classifiers, with all three racing — but once the user personally interacts with the dialog, automated results are discarded entirely, **human intent always takes priority**. See [11.5 Three Permission Handlers](#115-three-permission-handlers) for details.
+**Layer 7 — User Confirmation**: When all preceding automated layers cannot make a decision, a human makes the final call. The interactive dialog simultaneously launches Hook checks and ML classifiers, with all three racing — but once the user personally interacts with the dialog, automated results are discarded entirely, **human intent always takes priority**. See [12.5 Three Permission Handlers](#125-three-permission-handlers) for details.
 
 > Why not replace the 7 layers with a single unified permission check? Because the core assumption of defense in depth is "every layer can potentially be bypassed." If there were only tool-level checks, a clever command injection could bypass all security mechanisms. In the 7-layer architecture, even if AST semantic analysis is bypassed, path constraints and user confirmation can still intercept the threat.
 
-> **Reading suggestion**: If you want to build an overall understanding first, you can skip to [11.4 Complete Permission Decision Flow](#114-complete-permission-decision-flow) to see the full permission decision chain for a single tool invocation, then come back to read the details of permission modes and the rule system in 11.2/11.3.
+> **Reading suggestion**: If you want to build an overall understanding first, you can skip to [12.4 Complete Permission Decision Flow](#124-complete-permission-decision-flow) to see the full permission decision chain for a single tool invocation, then come back to read the details of permission modes and the rule system in 12.2/12.3.
 
-## 11.2 Permission Modes
+## 12.2 Permission Modes
 
 Claude Code defines 5 external permission modes and 2 internal modes:
 
@@ -62,7 +62,7 @@ This mode embodies the "secure by default" principle: **unknown operations alway
 
 Auto-approves file editing tools (`Edit`, `Write`, `NotebookEdit`), as well as file operation commands in Bash (`mkdir`, `touch`, `rm`, `rmdir`, `mv`, `cp`, `sed`). Other Bash commands still require confirmation.
 
-However, **safety checks for dangerous files and directories are bypass-immune** — even in acceptEdits mode, editing sensitive paths like `.git/`, `.bashrc`, `.claude/settings.json` still requires user confirmation. This design ensures that even when users choose a permissive mode, the security baseline is never breached (see [11.7 Dangerous File and Directory Protection](#117-dangerous-file-and-directory-protection) for details).
+However, **safety checks for dangerous files and directories are bypass-immune** — even in acceptEdits mode, editing sensitive paths like `.git/`, `.bashrc`, `.claude/settings.json` still requires user confirmation. This design ensures that even when users choose a permissive mode, the security baseline is never breached (see [12.7 Dangerous File and Directory Protection](#127-dangerous-file-and-directory-protection) for details).
 
 ### plan Mode
 
@@ -92,7 +92,7 @@ The opposite of bypassPermissions: converts all decisions that would "ask the us
 
 **`bubble` Mode**: Exclusive to the multi-Agent coordinator (Coordinator). Worker Agents use this mode to "bubble" undecidable permission requests up to the coordinator level for handling, avoiding permission decision conflicts between Workers.
 
-## 11.3 Permission Rule System
+## 12.3 Permission Rule System
 
 Permission rules are the foundational data structure of the entire permission system. Understanding rule format, matching methods, and priority is a prerequisite for understanding all subsequent security mechanisms.
 
@@ -200,7 +200,7 @@ This priority design meets enterprise scenario requirements: **enterprise policy
 
 When the model calls `Bash(npm test --coverage)`, the system matches the allow rule `Bash(npm test:*)` and auto-approves; when it calls `Bash(npm publish)`, it matches the ask rule, and a confirmation dialog pops up even in bypassPermissions mode.
 
-## 11.4 Complete Permission Decision Flow
+## 12.4 Complete Permission Decision Flow
 
 Now that we understand the rule system, let's look at the complete permission decision flow. Every tool call passes through the `hasPermissionsToUseToolInner` function, which is the core dispatcher of the entire permission system.
 
@@ -231,7 +231,7 @@ Let's walk through this flow step by step:
 **Step 1b — Tool-level ask rules**: Check whether any rule requires confirmation for the entire tool. There is one exception here: if the sandbox is enabled and `autoAllowBashIfSandboxed` is configured, sandboxed commands can skip ask rules and auto-approve — because the sandbox itself already restricts the command's capabilities.
 
 **Step 1c — Tool's own permission check**: Calls `tool.checkPermissions(parsedInput, context)`. Each tool implements its own logic:
-- **BashTool**: Performs the complete multi-layer security verification (AST parsing, static checks, path constraints, etc.), see [11.6](#116-multi-layer-security-verification-for-bash-commands) for details
+- **BashTool**: Performs the complete multi-layer security verification (AST parsing, static checks, path constraints, etc.), see [12.6](#126-multi-layer-security-verification-for-bash-commands) for details
 - **FileEditTool / FileWriteTool**: Checks whether the target file is in the dangerous list, whether it is within an allowed working directory
 - **Read-only tools** (Read, Glob, Grep): Typically return allow
 
@@ -247,7 +247,7 @@ Let's walk through this flow step by step:
 
 > Source: `src/utils/permissions/permissions.ts:1158-1319`, function `hasPermissionsToUseToolInner`
 
-## 11.5 Three Permission Handlers
+## 12.5 Three Permission Handlers
 
 When the permission decision flow reaches an ask conclusion, how is the confirmation dialog presented to the user? Different execution contexts use different permission handlers:
 
@@ -374,11 +374,11 @@ SwarmWorkerHandler is used in sub-Agent (Swarm Worker) scenarios. Its permission
 - **Restricted tool set**: Sub-Agents can only use the subset of tools explicitly authorized by the parent Agent
 - **No direct user interaction**: Sub-Agents cannot pop up confirmation dialogs; unauthorized operations are directly denied
 
-## 11.6 Multi-layer Security Verification for Bash Commands
+## 12.6 Multi-layer Security Verification for Bash Commands
 
 BashTool has the largest attack surface among all tools — it can execute arbitrary Shell commands, so it has the strictest security verification system.
 
-### 11.6.1 bashToolHasPermission Entry Flow
+### 12.6.1 bashToolHasPermission Entry Flow
 
 `bashToolHasPermission` is the main entry point for Bash permission checks (`src/tools/BashTool/bashPermissions.ts:1663`). Each command goes through the following check chain:
 
@@ -404,7 +404,7 @@ flowchart TD
     Sed --> Mode[Permission mode check]
 ```
 
-### 11.6.2 Tree-sitter AST Safe Parsing
+### 12.6.2 Tree-sitter AST Safe Parsing
 
 This is the most important innovation in the Bash security system. Traditional approaches (regex + manual character traversal) are prone to **parser differentials** when facing Shell's complex syntax — the command meaning understood by the security checker differs from what Bash actually executes, and attackers can exploit this discrepancy to bypass checks.
 
@@ -472,7 +472,7 @@ This "observe first, switch later" strategy is very common in safety-critical sy
 
 > Source: `src/utils/bash/ast.ts`, `src/tools/BashTool/bashPermissions.ts:1670-1806`
 
-### 11.6.3 23 Static Safety Validators
+### 12.6.3 23 Static Safety Validators
 
 `src/tools/BashTool/bashSecurity.ts` contains 23 independent checks, each targeting a specific attack vector:
 
@@ -504,7 +504,7 @@ This "observe first, switch later" strategy is very common in safety-critical sy
 
 The design philosophy behind these 23 checks is **independent and reject-on-any-trigger**. They don't need to all be correct—as long as any one of them detects an anomaly, the command is flagged as requiring user approval. This is exactly how defense in depth manifests within a single layer.
 
-### 11.6.4 Non-Suggestable Bare Shell Prefixes
+### 12.6.4 Non-Suggestable Bare Shell Prefixes
 
 When a user approves a command, the system automatically suggests saving it as a permission rule. However, the following prefixes **cannot be suggested as rules**, because they allow `-c` arguments to execute arbitrary code—suggesting `Bash(bash:*)` is equivalent to allowing everything:
 
@@ -512,7 +512,7 @@ When a user approves a command, the system automatically suggests saving it as a
 - **Wrappers**: env, xargs, nice, stdbuf, nohup, timeout, time
 - **Privilege escalation tools**: sudo, doas, pkexec
 
-### 11.6.5 Zsh-Specific Protections
+### 12.6.5 Zsh-Specific Protections
 
 Since Claude Code defaults to using the user's shell (which is often zsh), specific protections are needed against zsh-specific dangerous features:
 
@@ -540,7 +540,7 @@ Additionally, zsh-specific dangerous expansion syntax is detected:
 | `(e:)` | Glob qualifier, can execute arbitrary code during filename matching |
 | `(+)` | Glob qualifier, can trigger custom functions |
 
-### 11.6.6 Compound Command Security Restrictions
+### 12.6.6 Compound Command Security Restrictions
 
 For compound commands connected via `&&`, `||`, `;`, `|`, the security checker splits them into subcommands and verifies each one individually. However, to prevent maliciously crafted ultra-long compound commands from causing ReDoS or exponentially growing check overhead, the system sets hard limits:
 
@@ -552,7 +552,7 @@ const MAX_SUGGESTED_RULES_FOR_COMPOUND = 5
 // Compound commands generate at most 5 auto-suggested permission rules, preventing rule explosion
 ```
 
-## 11.7 Dangerous File and Directory Protection
+## 12.7 Dangerous File and Directory Protection
 
 Beyond Bash command security checks, file editing tools (`Edit`, `Write`, `NotebookEdit`) have their own independent security mechanisms. The system maintains a list of dangerous files and directories—these paths require user confirmation even in bypassPermissions mode.
 
@@ -617,7 +617,7 @@ This prevents accidentally gaining permission to modify the entire `.claude/` di
 
 > Source: `src/utils/permissions/filesystem.ts`
 
-## 11.8 Permission Decision Tracking
+## 12.8 Permission Decision Tracking
 
 Every permission decision is fully recorded for auditing and debugging:
 
@@ -651,7 +651,7 @@ Each tool call has a unique `toolUseID`, and decision records are stored in the 
 
 2. **PermissionDenied Hook**: Triggered when permission is denied, passing denial details to external scripts. Enterprises can use this to implement custom logging, alert notifications, and compliance reports.
 
-## 11.9 Sandbox Design
+## 12.9 Sandbox Design
 
 The sandbox is the most "physical" layer in defense in depth—it restricts the execution environment of commands through OS-level mechanisms, so that even if the code itself is malicious, it cannot exceed the sandbox's boundaries.
 
@@ -707,7 +707,7 @@ The naming of the `dangerouslyDisableSandbox` parameter is intentionally designe
 
 > Source: `src/utils/sandbox/sandbox-adapter.ts`
 
-## 11.10 Path Boundary Protection
+## 12.10 Path Boundary Protection
 
 Path boundary protection ensures that tool operations do not exceed the allowed path scope. This is a seemingly simple but detail-rich security mechanism.
 
@@ -755,7 +755,7 @@ The path extraction logic differs for each command—for example, `cp` needs to 
 
 > Source: `src/tools/BashTool/pathValidation.ts`, `src/utils/permissions/pathValidation.ts`
 
-## 11.11 Prompt Injection Defense
+## 12.11 Prompt Injection Defense
 
 Claude Code defends against prompt injection attacks through multiple mechanisms:
 
@@ -792,7 +792,7 @@ Claude Code uses `<system-reminder>` tags in tool results to inject system-level
 4. **Hook system**: PreToolUse Hook can intercept suspicious tool calls
 5. **Trust Dialog**: First use requires confirming workspace trust, untrusted workspaces disable all custom Hooks
 
-## 11.12 Environment Variable Security
+## 12.12 Environment Variable Security
 
 Bash commands often include environment variable assignment prefixes (e.g., `NODE_ENV=production npm start`). The permission system needs to handle these variables correctly, otherwise two problems arise:
 
@@ -834,7 +834,7 @@ Design principle: **If a variable can affect code execution or library loading, 
 
 > Source: `src/tools/BashTool/bashPermissions.ts`, `stripSafeWrappers` and `SAFE_ENV_VARS` related code
 
-## 11.13 Denial Tracking and Degradation
+## 12.13 Denial Tracking and Degradation
 
 When the model's tool calls are repeatedly denied, Claude Code tracks the denial count and triggers a degradation strategy:
 
@@ -862,7 +862,7 @@ This mechanism addresses a common problem: the model may not understand why a ce
 
 > Source: `src/utils/permissions/denialTracking.ts`
 
-## 11.14 PermissionRequest Hook
+## 12.14 PermissionRequest Hook
 
 This is the most powerful security extension point—it can **programmatically approve or deny** tool usage:
 
@@ -938,7 +938,7 @@ When a Hook approves an operation, it can simultaneously inject new persistent p
 >
 > `DENIAL_LIMITS = { maxConsecutive: 3, maxTotal: 20 }` (`src/utils/permissions/denialTracking.ts`). This mechanism prevents auto mode (auto mode / headless agents) from falling into infinite denial loops: if the classifier denies the same type of request 3 times consecutively, it indicates that the current task may require human judgment; the 20 total limit prevents the entire session from accumulating too many silent denials. After exceeding the threshold, the system falls back to interactive confirmation (prompting), letting the user intervene in decisions.
 
-## 11.15 Security Design Principles Summary
+## 12.15 Security Design Principles Summary
 
 ```mermaid
 mindmap
@@ -977,3 +977,5 @@ Looking at the entire permission and security system, its core design philosophy
 ---
 
 > **Hands-on Practice**: In [claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch)'s `src/agent.ts`, search for permission-related code to see a minimal "confirm before execution" implementation. Compare it with the defense-in-depth architecture in this chapter and consider: what are the minimum security layers a minimal Agent needs? See the tutorial [Chapter 5: Permissions and Security](https://github.com/Windy3f3f3f3f/claude-code-from-scratch/blob/main/docs/05-safety.md).
+
+Previous chapter: [Task Management System](/en/docs/15-task-system.md) | Next chapter: [System Prompt Design](/en/docs/14-system-prompt-design.md)

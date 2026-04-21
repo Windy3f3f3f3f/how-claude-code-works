@@ -1,10 +1,10 @@
-# Chapter 5: Code Editing Strategy
+# Chapter 10: Code Editing Strategy
 
 > A good coding agent doesn't just write code — it modifies code in a minimally destructive way.
 
 Code editing is the most core and most dangerous capability of a coding agent — a single wrong edit can break an entire codebase, while a good editing strategy enables an agent to modify code with the precision of an experienced developer. Claude Code's editing strategy is designed around three core principles: **minimal destructiveness** (only change what needs changing), **verifiability** (every edit has a clear before/after), and **hallucination resistance** (the model cannot silently write non-existent code). Based on these principles, Claude Code favors FileEditTool (search-and-replace) over FileWriteTool (full file overwrite) — the former naturally satisfies all three constraints, while the latter is only suitable for creating new files or scenarios requiring a complete rewrite.
 
-## 5.1 Two Editing Tools
+## 10.1 Two Editing Tools
 
 Claude Code provides two file editing tools, each suited for different scenarios:
 
@@ -17,11 +17,11 @@ The system prompt explicitly guides the model: **prefer FileEditTool**. Only use
 
 FileEditTool is the default choice because it solves the thorniest problem of LLM code editing at an engineering level: how do you let a model that may hallucinate safely modify real code? The following sections dive deep into FileEditTool's design to understand the "why" behind every engineering decision.
 
-## 5.2 FileEditTool: The Search-and-Replace Approach
+## 10.2 FileEditTool: The Search-and-Replace Approach
 
-FileEditTool is the core tool for code editing in Claude Code, employing an exact string replacement strategy. This section unfolds from the outside in: first the interface design (5.2.1), then the engineering considerations behind the approach selection (5.2.2), followed by input preprocessing (5.2.3), the validation pipeline (5.2.4), the uniqueness constraint (5.2.5), and implementation details (5.2.6).
+FileEditTool is the core tool for code editing in Claude Code, employing an exact string replacement strategy. This section unfolds from the outside in: first the interface design (10.2.1), then the engineering considerations behind the approach selection (10.2.2), followed by input preprocessing (10.2.3), the validation pipeline (10.2.4), the uniqueness constraint (10.2.5), and implementation details (10.2.6).
 
-### 5.2.1 Interface Design and How It Works
+### 10.2.1 Interface Design and How It Works
 
 #### Input Schema
 
@@ -43,7 +43,7 @@ FileEditTool requires no line numbers, no regular expressions. Its operation is 
 3. Replace it with `new_string`
 4. If `old_string` is not unique, return an error requesting more context
 
-### 5.2.2 Why Search-and-Replace Is Superior to Other Approaches
+### 10.2.2 Why Search-and-Replace Is Superior to Other Approaches
 
 There are deep engineering considerations behind this design choice:
 
@@ -66,7 +66,7 @@ The model must provide an exact string that **actually exists** in the file. If 
 
 For small changes to large files, search-and-replace only needs to send context around the modification point, rather than the entire file content.
 
-#### 5. Git Friendliness
+#### 10. Git Friendliness
 
 Search-and-replace produces minimal, precise diffs. When creating automated PRs, reviewers see clean, targeted changes.
 
@@ -84,7 +84,7 @@ Before settling on the search-and-replace approach, it's worth understanding why
 
 **Hallucination safety is the most underrated advantage of search-and-replace**. Consider this scenario: the model "remembers" a `handleError()` function in the file, but in reality this function was renamed to `processError()` in the last refactoring. If using search-and-replace, the model providing `old_string: "function handleError()"` will directly fail (error code 8: "String to replace not found in file"), and the model will re-read the file upon seeing the error and discover the correct function name. If using full file rewrite, the model might write out a complete file containing `handleError()`, overwriting the correct `processError()` — and this error is completely silent, with no error message at all.
 
-### 5.2.3 Input Preprocessing Pipeline
+### 10.2.3 Input Preprocessing Pipeline
 
 Before entering the core validation and execution flow, the model's input goes through a preprocessing stage. `normalizeFileEditInput()` is called before `validateInput`, responsible for cleaning common imperfections in model output:
 
@@ -116,7 +116,7 @@ When the model's `old_string` output cannot exactly match the file content, `des
 
 This preprocessing stage is completely transparent to users — in most cases, users won't even realize it exists. But for editing files containing XML tags or special strings like `Human:`/`Assistant:` (e.g., prompt template files), it is critical to whether the edit succeeds.
 
-### 5.2.4 Complete Validation Pipeline
+### 10.2.4 Complete Validation Pipeline
 
 The `validateInput()` method of FileEditTool implements a multi-layered validation pipeline that intercepts various issues before the edit is actually executed. The order of validation is deliberately designed: **low-cost checks come first, checks requiring file I/O come in the middle, and checks depending on file content come last**. This way, issues that can be caught early don't waste subsequent disk read overhead.
 
@@ -147,7 +147,7 @@ Several steps are worth discussing in detail:
 
 **Step 14: Config file protection**. For config files like `.claude/settings.json`, validation not only checks whether `old_string` exists, but also **simulates executing the edit** and verifies whether the result conforms to the JSON Schema. This prevents a dangerous scenario: a seemingly reasonable edit could corrupt the config file format, preventing Claude Code from starting properly.
 
-### 5.2.5 Uniqueness Constraint
+### 10.2.5 Uniqueness Constraint
 
 In the validation pipeline above, the uniqueness constraint in step 13 deserves separate discussion. FileEditTool requires `old_string` to appear exactly once in the file. If it's not unique, the edit fails with the message:
 
@@ -163,7 +163,7 @@ The design philosophy behind this constraint is "better to fail than to guess":
 - **Require contextual understanding**: This forces the model to truly understand the code structure before editing. The model cannot take shortcuts by providing just a keyword — it must provide enough contextual snippet to uniquely identify the modification point
 - **`replace_all` as an explicit escape valve**: When batch operations like variable renaming are needed, the model must explicitly set `replace_all: true`. This design makes batch replacement a "deliberate choice" rather than an "accidental consequence"
 
-### 5.2.6 Implementation Details: From Matching to Writing
+### 10.2.6 Implementation Details: From Matching to Writing
 
 #### Quote Normalization
 
@@ -287,7 +287,7 @@ function areFileEditsEquivalent(edits1, edits2, originalContent): boolean {
 
 This semantic comparison can identify edits that are "different in input but identical in effect". For example, two sets of edits might use different lengths of `old_string` context, but the final modifications are completely identical — they will be correctly determined as equivalent, avoiding redundant execution.
 
-## 5.3 FileWriteTool: Full File Write
+## 10.3 FileWriteTool: Full File Write
 
 FileWriteTool is positioned for creating new files or complete rewrites:
 
@@ -392,7 +392,7 @@ if (size > MAX_EDIT_FILE_SIZE) {
 }
 ```
 
-## 5.4 Read-Before-Edit Requirement
+## 10.4 Read-Before-Edit Requirement
 
 The system prompt mandates: **you must read a file before editing it**.
 
@@ -469,7 +469,7 @@ if (!contentUnchanged) {
 
 After a successful edit, `readFileState` is immediately updated with the new content and timestamp, preventing false positives in subsequent edits. This update is crucial — without it, when the model makes a second edit to the same file in the same turn, the new mtime (caused by the just-completed write) would be greater than the old readTimestamp, triggering a false "file modified externally" alarm. After the update, subsequent edits can proceed normally without re-reading the file.
 
-## 5.5 Multi-File Edit Coordination
+## 10.5 Multi-File Edit Coordination
 
 When coordinated modifications across multiple files are needed (such as renaming a widely referenced function), Claude Code's strategy is:
 
@@ -528,7 +528,7 @@ For large-scale refactoring, AgentTool supports Git Worktree isolation mode. Sub
 }
 ```
 
-## 5.6 Indentation Preservation
+## 10.6 Indentation Preservation
 
 The system prompt provides explicit guidance about indentation:
 
@@ -540,7 +540,7 @@ line number prefix.
 
 This is particularly important because the Read tool's output includes line number prefixes (`cat -n` format), and the model needs to correctly distinguish between the line number prefix and the actual indentation in the file content.
 
-## 5.7 NotebookEditTool: Jupyter Editing
+## 10.7 NotebookEditTool: Jupyter Editing
 
 For Jupyter Notebooks (`.ipynb` files), Claude Code provides the specialized NotebookEditTool, which understands Notebook cell structure and performs precise editing at the cell level.
 
@@ -607,7 +607,7 @@ NotebookEditTool shares the same core security mechanisms as FileEditTool:
 
 After writing, it also updates the `readFileState` cache, maintaining consistency with other editing tools.
 
-## 5.8 Atomic Writes and LSP Integration
+## 10.8 Atomic Writes and LSP Integration
 
 FileEditTool's `call()` method implements a complete edit execution pipeline, from file reading to various post-write side effects:
 
@@ -690,7 +690,7 @@ This means editing a UTF-16LE + CRLF file (legacy text files on Windows) is inte
 
 **Skill directory discovery**: When the edited file is located within a skill directory, `discoverSkillDirsForPaths()` identifies that directory and triggers dynamic skill loading. Additionally, `activateConditionalSkillsForPaths()` activates conditional skills matching the path. This allows new skills to be immediately discovered and used when editing skill files.
 
-## 5.9 Diff Rendering
+## 10.9 Diff Rendering
 
 After an edit is complete, Claude Code needs to display the changes to the user in the terminal. This is handled by the `StructuredDiff` component (`src/components/StructuredDiff.tsx`).
 
@@ -765,7 +765,7 @@ The gutter column is wrapped in `<NoSelect>`, so when users select and copy diff
 
 When the gutter width exceeds the total terminal width (extremely narrow terminal scenario), it automatically falls back to single-column rendering, handled by the Rust module with automatic line wrapping. If the native module is unavailable or syntax highlighting is disabled, it falls back to the `StructuredDiffFallback` component for plain text rendering.
 
-## 5.10 Integration with the Tool System
+## 10.10 Integration with the Tool System
 
 The position of editing tools within the tool system:
 
@@ -786,7 +786,7 @@ graph LR
 
 In `acceptEdits` permission mode, editing tools are automatically approved without requiring user confirmation — this is a significant efficiency boost for high-trust projects.
 
-## 5.11 Key Design Insights
+## 10.11 Key Design Insights
 
 1. **Low destructiveness is the core principle**: Search-and-replace was not chosen because it's simple, but because it has the least impact on the codebase
 2. **Failure is better than silent errors**: The uniqueness constraint ensures the model won't make incorrect edits in ambiguous scenarios
@@ -806,4 +806,4 @@ The essence of this editing strategy can be summarized in one sentence: **It is 
 
 > **Hands-on practice**: In the `src/tools.ts` of [claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch), the `edit_file` tool implements a simplified version of the search-and-replace strategy. Try running `npm start` to let the Agent edit a file, and observe how the uniqueness constraint works in practice.
 
-Previous chapter: [Tool System](/en/docs/04-tool-system.md) | Next chapter: [Hooks and Extensibility](/en/docs/06-hooks-extensibility.md)
+Previous chapter: [Plan Mode](/en/docs/10-plan-mode.md) | Next chapter: [Task Management System](/en/docs/15-task-system.md)
