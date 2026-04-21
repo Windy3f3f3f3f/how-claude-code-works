@@ -195,9 +195,9 @@ Claude Code 支持三种多 Agent 模式：
 
 ## 🤝 贡献者
 
-| <img src="https://github.com/Windy3f3f3f3f.png" width="60" /> | <img src="https://github.com/davidweidawang.png" width="60" /> | <img src="./assets/kaibo.jpg" width="60" /> |
-|:---:|:---:|:---:|
-| [@Windy3f3f3f3f](https://github.com/Windy3f3f3f3f) | [@davidweidawang](https://github.com/davidweidawang) | [Kaibo Huang](https://scholar.google.com/citations?user=C7B5X5IAAAAJ&hl=zh-CN) |
+| <img src="https://github.com/Windy3f3f3f3f.png" width="60" /> | <img src="https://github.com/davidweidawang.png" width="60" /> | <img src="./assets/kaibo.jpg" width="60" /> | <img src="https://github.com/longx24.png" width="60" /> |
+|:---:|:---:|:---:|:---:|
+| [@Windy3f3f3f3f](https://github.com/Windy3f3f3f3f) | [@davidweidawang](https://github.com/davidweidawang) | [Kaibo Huang](https://scholar.google.com/citations?user=C7B5X5IAAAAJ&hl=zh-CN) | [@longx24](https://github.com/longx24) |
 
 欢迎提 Issue 和 PR！如果你发现分析有误或有更好的理解角度，非常欢迎讨论。
 
