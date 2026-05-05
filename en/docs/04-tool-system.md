@@ -191,7 +191,7 @@ This code has two key design decisions:
 
 ## 4.3 Built-in Tool Inventory
 
-Claude Code includes **66+ built-in tools**, organized into 7 categories by functional domain. These categories reflect the core capability model of a coding agent: **File Operations** are the foundation (read, write, and search are the highest-frequency operations), **Agent Management** supports multi-Agent collaboration, **User Interaction** and **System** ensure human-in-the-loop control, and **MCP Integration** provides an outlet for unlimited extension. The guiding principle for tool selection is "cover 95% of a developer's daily workflow"—the remaining 5% is handled by BashTool (the universal fallback) and MCP extensions.
+Claude Code includes **66+ built-in tools**, organized into 6 categories by functional domain. These categories reflect the core capability model of a coding agent: **File Operations** are the foundation (read, write, and search are the highest-frequency operations), **Agent Management & Team Collaboration** supports multi-Agent execution, **User Interaction** and **System** ensure human-in-the-loop control, and **Tool Extensions** unify skills, deferred tool loading, and MCP/LSP external capabilities. The guiding principle for tool selection is "cover 95% of a developer's daily workflow"—the remaining 5% is handled by BashTool (the universal fallback), skills, and MCP extensions.
 
 | Category | Tool | Description |
 |----------|------|-------------|
@@ -204,28 +204,28 @@ Claude Code includes **66+ built-in tools**, organized into 7 categories by func
 | | NotebookEditTool | Jupyter Notebook editing |
 | **Network** | WebFetchTool | Fetch web page content |
 | | WebSearchTool | API-driven web search |
-| **Agent Management** | AgentTool | Spawn sub-Agents (core of multi-Agent architecture) |
+| **Agent Management & Team Collaboration** | AgentTool | Spawn sub-Agents (core of multi-Agent architecture) |
 | | TaskOutputTool | Output task results |
 | | TaskStopTool | Stop background tasks |
 | | TaskCreate/Get/Update/ListTool | Task management v2 (see [Chapter 11](15-task-system.md)) |
 | | SendMessageTool | Inter-Agent communication |
+| | TeamCreateTool | Create Agent teams |
+| | TeamDeleteTool | Delete Agent teams |
+| | ListPeersTool | List peer Agents |
 | **User Interaction** | AskUserQuestionTool | Ask users questions |
 | | TodoWriteTool | Manage to-do lists |
-| | SkillTool | Load and execute skills |
 | **System** | EnterPlanModeTool | Enter planning mode |
 | | ExitPlanModeTool | Exit planning mode |
 | | EnterWorktreeTool | Enter Git Worktree isolation |
 | | ExitWorktreeTool | Exit Worktree |
 | | BriefTool | Generate brief summaries |
-| | ToolSearchTool | Search and load deferred tools |
 | | ConfigTool | Configuration management |
-| **MCP Integration** | ListMcpResourcesTool | List MCP resources |
+| **Tool Extensions** | SkillTool | Load and execute skills |
+| | ToolSearchTool | Search and load deferred tools |
+| | ListMcpResourcesTool | List MCP resources |
 | | ReadMcpResourceTool | Read MCP resources |
 | | MCPTool | MCP tool proxy |
 | | LSPTool | Language server operations |
-| **Team Collaboration** | TeamCreateTool | Create Agent teams |
-| | TeamDeleteTool | Delete Agent teams |
-| | ListPeersTool | List peer Agents |
 
 ## 4.4 Tool Execution Lifecycle
 
@@ -348,8 +348,11 @@ If none of the above checks made a definitive decision (neither auto-allow nor a
 **Stage 7 - Post-Tool Hook**
 
 The Post-Tool Hook is split into two independent events:
-- **`postToolUse`**: Triggered when tool execution succeeds; the Hook script receives the tool name, input, and output
-- **`postToolFail`**: Triggered when tool execution fails; the Hook script receives the tool name, input, and error details
+
+| Hook Event | Trigger | Script Receives |
+|------------|---------|-----------------|
+| `postToolUse` | Triggered when tool execution succeeds | Tool name, input, and output |
+| `postToolFail` | Triggered when tool execution fails | Tool name, input, and error details |
 
 Both are independent Hook events, and users can configure different handling logic for each. For example, you could send a notification in `postToolUse` for BashTool's `git push` command, and log failures in `postToolFail`.
 
