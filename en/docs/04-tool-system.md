@@ -901,7 +901,7 @@ Each tool comes with its own React rendering methods (`renderToolUseMessage`, `r
 
 **4. Compile-time Trimming via Feature Gates**
 
-Through Bun's `feature()` compile-time macro and dead code elimination, external builds physically exclude the code for internal tools. This is not a runtime `if (isInternal)` check (which could be bypassed), but rather the complete absence of related code from the compiled artifact — even reverse engineering cannot recover it.
+Through Bun's `feature()` compile-time macro and dead code elimination, external builds physically exclude the code for internal tools. This is not a runtime `if (isInternal)` check (which could be bypassed), but rather the complete absence of related code from the compiled artifact — even with full access to the build artifact, the code cannot be recovered.
 
 **5. Fail-closed Security Defaults**
 

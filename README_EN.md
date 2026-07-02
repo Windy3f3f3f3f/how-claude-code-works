@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![TypeScript](https://img.shields.io/badge/Source-TypeScript-3178C6?logo=typescript&logoColor=white)](https://github.com/anthropics/claude-code)
 
-> A deep dive into the source code architecture of the most successful AI coding agent
+> **Educational architecture analysis of Claude Code — an Agentic Coding System study**
 
 <p align="center">
   <a href="https://windy3f3f3f3f.github.io/how-claude-code-works/#/en/"><strong>📘 Read Online</strong></a>
@@ -12,13 +12,15 @@
   <a href="./README.md">中文</a>
 </p>
 
-> 🛠️ **Want to build one yourself?** Companion project **[Claude Code From Scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch)** — 1300 lines of TypeScript, 8-chapter step-by-step tutorial, build your own Claude Code from zero
+> 🛠️ **Want to build one yourself?** Companion project **[Claude Code From Scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch)** — ~4300 lines (TypeScript & Python), 13-chapter tutorial, a clean-room educational Coding Agent inspired by Claude Code
 
 ---
 
+> ⚖️ **Disclaimer**: This project is an **educational architecture analysis** aimed at developers. All content is independent research and reasoning — it does **not** represent Anthropic's official design and makes **no guarantee** of alignment with Claude Code's real internal implementation. "Claude Code" is a trademark of Anthropic; this project is not affiliated with Anthropic and does not redistribute any Anthropic source code.
+
 Claude Code is the most widely used AI coding agent today. It understands entire codebases, autonomously executes multi-step programming tasks, and safely runs commands — all powered by engineering wisdom distilled into **500K+ lines of TypeScript source code**.
 
-Anthropic open-sourced this codebase. **But where do you even start with 500K lines of code?**
+A community-circulating source snapshot of this 500K-line TypeScript codebase finally let us see — first-hand — what a real, production-grade Coding Agent actually looks like under the hood. **But where do you even start with 500K lines?**
 
 This project is the answer. We've distilled **14 topic-specific documents** (338K characters total) covering every critical design decision, from the core agent loop to the security architecture. Whether you want to build your own AI agent or deeply understand how Claude Code works, this is the shortest path.
 

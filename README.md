@@ -2,7 +2,7 @@
 
 # How Claude Code Works
 
-**深入解读当前最成功的 AI 编程 Agent 的源码架构**
+**Claude Code 架构学习笔记 — Agentic Coding System 深度分析**
 
 [![GitHub stars](https://img.shields.io/github/stars/Windy3f3f3f3f/how-claude-code-works?style=flat-square&logo=github)](https://github.com/Windy3f3f3f3f/how-claude-code-works)
 [![GitHub forks](https://img.shields.io/github/forks/Windy3f3f3f3f/how-claude-code-works?style=flat-square&logo=github)](https://github.com/Windy3f3f3f3f/how-claude-code-works/fork)
@@ -18,15 +18,17 @@
 
 <br/>
 
-> 🛠️ **想动手造一个？** 配套项目 **[Claude Code From Scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch)** — ~4000 行 TypeScript 或 Python两个版本，11 章分步教程，从零构建你自己的 Claude Code
+> 🛠️ **想动手造一个？** 配套项目 **[Claude Code From Scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch)** — ~4300 行 TypeScript / Python 两个版本，13 章分步教程，clean-room 教育实现，从零造一个受 Claude Code 启发的 Coding Agent
 
 </div>
 
 ---
 
+> ⚖️ **声明 / Disclaimer**：本项目是面向开发者的教育性架构分析。所有内容均为独立研究与推理，**不代表 Anthropic 官方设计**，也不保证与 Claude Code 真实内部实现一致。"Claude Code" 是 Anthropic 的商标，本项目与 Anthropic 无任何关联，亦不对外分发任何来自 Anthropic 的源码。
+
 Claude Code 是目前使用最广泛的 AI 编程 Agent，也是我们认为最好用的 AI 编程工具。它能理解整个代码仓库、自主执行多步编程任务、安全地运行命令——而这一切背后是 **50 万行 TypeScript 源码**中沉淀的工程智慧。
 
-Anthropic 开源（x）了这份源码。**但 50 万行代码，从哪里开始读？**
+这份 50 万行 TypeScript 的源码以快照形式在社区流出后，第一次让我们能从一个真实的、跑在百万开发者机器上的生产级 Coding Agent 里，亲眼看到它到底长什么样。**但 50 万行——从哪里开始读？**
 
 这也是我们创建这个项目的初衷——我们都遇到了没有办法阅读这么庞大代码项目的问题，解决方案是和 Claude Code 一起读，让它写文档配合我们理解源代码。在此同时，我们想把这个过程文档化，就形成了这个项目。
 
