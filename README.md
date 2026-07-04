@@ -26,6 +26,8 @@
 
 > ⚖️ **声明 / Disclaimer**：本项目是面向开发者的教育性架构分析。所有内容均为独立研究与推理，**不代表 Anthropic 官方设计**，也不保证与 Claude Code 真实内部实现一致。"Claude Code" 是 Anthropic 的商标，本项目与 Anthropic 无任何关联，亦不对外分发任何来自 Anthropic 的源码。
 
+> ⚖️ **写在前面**：距离3月底的源码泄露事件，到现在claude code又更新了许多新的功能，尤其是/goal /loop组成的 loop engineering, 以及dynamic workflow为代表的新的agent编排、观测和干预方法，这些新的功能的原理分析其实对于我们使用claude code帮助很大，因此我们近期也在持续逆向解析这些新的功能，不断更新该repo
+
 Claude Code 是目前使用最广泛的 AI 编程 Agent，也是我们认为最好用的 AI 编程工具。它能理解整个代码仓库、自主执行多步编程任务、安全地运行命令——而这一切背后是 **50 万行 TypeScript 源码**中沉淀的工程智慧。
 
 这份 50 万行 TypeScript 的源码以快照形式在社区流出后，第一次让我们能从一个真实的、跑在百万开发者机器上的生产级 Coding Agent 里，亲眼看到它到底长什么样。**但 50 万行——从哪里开始读？**
