@@ -115,7 +115,7 @@ Tools are the means by which an Agent interacts with the real world. Without too
 
 ### Unified Tool Interface
 
-Claude Code includes **66+ built-in tools**, all unified under the `Tool` interface. The core design is **fail-closed defaults** — if a new tool doesn't explicitly declare safety properties, it is treated as unsafe by default. This means a missing declaration won't cause a security vulnerability, only limited functionality.
+Claude Code includes **50+ built-in tools**, all unified under the `Tool` interface. The core design is **fail-closed defaults** — if a new tool doesn't explicitly declare safety properties, it is treated as unsafe by default. This means a missing declaration won't cause a security vulnerability, only limited functionality.
 
 | Core Tools | Function |
 |------------|----------|
@@ -290,7 +290,7 @@ graph TB
 
     Loop --> Compress[4-Level Compression<br/>Snip→MC→CC→AC]
     Loop --> API[Anthropic API<br/>Streaming+Caching]
-    Loop --> Tools[66+ Tools]
+    Loop --> Tools[50+ Tools]
 
     Tools --> Read[FileRead<br/>Grep/Glob]
     Tools --> Edit[FileEdit<br/>search-replace]
@@ -317,9 +317,9 @@ graph TB
 | File | Lines | Responsibility |
 |------|-------|----------------|
 | `src/query.ts` | 1,728 | Core query loop |
-| `src/QueryEngine.ts` | 1,155 | Session engine |
-| `src/Tool.ts` | ~400 | Tool interface definition |
-| `src/tools.ts` | ~200 | Tool registration |
+| `src/QueryEngine.ts` | ~1,295 | Session engine |
+| `src/Tool.ts` | ~790 | Tool interface definition |
+| `src/tools.ts` | ~390 | Tool registration |
 | `src/context.ts` | 190 | Context construction |
 | `src/services/api/claude.ts` | 3,419 | API call logic |
 | `src/services/compact/compact.ts` | 1,705 | Compression engine |

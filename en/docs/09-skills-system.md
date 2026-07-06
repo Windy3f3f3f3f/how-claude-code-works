@@ -51,7 +51,7 @@ Why a directory format instead of a single file? Because skills may need accompa
 
 > This section answers: Where do skills come from? What happens at Claude Code startup?
 
-### Six Sources
+### Five Sources
 
 Skills are loaded from multiple sources. `loadAllCommands()` (`src/commands.ts`) merges them in the following order, and `findCommand()` returns the **first match**, so sources listed earlier have higher priority:
 
@@ -73,7 +73,7 @@ File system skills are deduplicated via `realpath()` to resolve symlinks — fil
 There's an easy-to-miss but important design here: skill content is **not loaded at startup**. The system only preloads frontmatter (name, description, whenToUse); the full Markdown prompt content is read only when the user actually invokes or the model triggers it.
 
 ```typescript
-// src/tools/SkillTool/prompt.ts
+// src/skills/loadSkillsDir.ts
 export function estimateSkillFrontmatterTokens(skill: Command): number {
   const frontmatterText = [skill.name, skill.description, skill.whenToUse]
     .filter(Boolean)
@@ -176,7 +176,7 @@ Skill files are Markdown + YAML frontmatter. Here are all supported fields:
 |------|------|------|
 | **Basic** | `name` | Display name (defaults to directory name) |
 | | `description` | Skill description (influences model auto-trigger judgment) |
-| | `when-to-use` | Auto-trigger condition description |
+| | `when_to_use` | Auto-trigger condition description (note: this is the only multi-word field using an underscore; the others, e.g. `allowed-tools` / `argument-hint` / `user-invocable` / `disable-model-invocation`, use hyphens) |
 | | `argument-hint` | Argument hint (displayed in help and Tab completion) |
 | | `arguments` | Named argument list (e.g., `[file, mode]`, maps to `$file`, `$mode`) |
 | **Execution** | `context` | `inline` (default) or `fork`, determines execution isolation level |
@@ -207,7 +207,7 @@ The complete substitution flow (`getPromptForCommand()`) is as follows:
 ```mermaid
 flowchart TD
     Raw[Raw Markdown Content] --> Base["1. Base Directory Prefix<br/>'Base directory for this skill: {dir}'"]
-    Base --> Args["2. Argument Substitution<br/>$ARGUMENTS / $file / ${file} / $0"]
+    Base --> Args["2. Argument Substitution<br/>$ARGUMENTS / $file / $0"]
     Args --> Env["3. Environment Variable Substitution<br/>${CLAUDE_SKILL_DIR}<br/>${CLAUDE_SESSION_ID}"]
     Env --> Shell{"4. Inline Shell Execution<br/>Local skill?"}
     Shell -->|Yes| Exec["executeShellCommandsInPrompt()<br/>Execute !` ... ` blocks"]
@@ -220,7 +220,7 @@ flowchart TD
 
 **Step 2 — Argument substitution**: `substituteArguments()` handles multiple argument formats:
 - `$ARGUMENTS`: Replaced with the entire argument string
-- `$file` / `${file}`: Replaced with named arguments (mapped from the frontmatter's `arguments` field)
+- `$file`: Replaced with named arguments (mapped from the frontmatter's `arguments` field; named arguments only support the brace-less form — `${file}` is not recognized, as the brace form `${...}` is reserved for built-in environment variables)
 - `$0` / `$1`: Replaced by positional index
 - `$ARGUMENTS[0]`: Indexed access
 - If the prompt has **no placeholders at all**, arguments are automatically appended at the end (`ARGUMENTS: ...`)
@@ -335,7 +335,7 @@ Fork mode creates a sub-Agent via `runAgent()` with fully isolated context. Afte
 ```markdown
 ---
 description: Review all changes on the current branch
-when-to-use: When the user asks to review code quality
+when_to_use: When the user asks to review code quality
 allowed-tools: [Bash, Read, Grep, Glob]
 context: fork
 ---
@@ -351,7 +351,7 @@ Choosing fork because review requires many `git diff`, `Read`, `Grep` calls that
 ```markdown
 ---
 description: Check and fix code style of recently modified files
-when-to-use: When the user wants to check style consistency after modifying code
+when_to_use: When the user wants to check style consistency after modifying code
 ---
 
 Check if my recently modified files conform to the project's code style, fix any issues directly.
@@ -411,7 +411,7 @@ The cost of a whitelist omission is "one extra user confirmation." The cost of a
 MCP skills come from remote servers and are treated as untrusted code, with the strictest restrictions:
 
 ```typescript
-// src/utils/processUserInput/processSlashCommand.tsx
+// src/skills/loadSkillsDir.ts (inside getPromptForCommand)
 // Security: MCP skills are remote and untrusted
 if (loadedFrom !== 'mcp') {
   finalContent = await executeShellCommandsInPrompt(finalContent, ...)
@@ -518,9 +518,9 @@ registerBundledSkill({
 })
 ```
 
-Skills needing reference files declare them via the `files` property — they're extracted to `~/.claude/bundled-skills/{name}/` on first invocation, with `extractionPromise` memoized for concurrency safety. The skill prompt is automatically prefixed with `"Base directory for this skill: {dir}"`.
+Skills needing reference files declare them via the `files` property — on first invocation they're extracted to a temp directory `<claude-temp>/bundled-skills/{version}/{nonce}/{name}/` (version-scoped to isolate stale extractions from other binaries, plus a per-process random `nonce` as the primary defense against privilege escalation; not `~/.claude`), with `extractionPromise` memoized for concurrency safety. The skill prompt is automatically prefixed with `"Base directory for this skill: {dir}"`.
 
-Some bundled skills are gated by feature flags (e.g., `claudeApi` requires `BUILDING_CLAUDE_APPS`), with availability dynamically determined through the `isEnabled` callback.
+Bundled skill availability uses two distinct mechanisms: (1) **registration-time gating** — a `feature()` check decides whether to register at all, e.g. `claudeApi` only calls `registerClaudeApiSkill()` when `feature('BUILDING_CLAUDE_APPS')` is true, and is never registered otherwise; (2) **post-registration `isEnabled` callback** — the skill is registered unconditionally, but each time its visibility is decided by the callback, e.g. `/loop` (`isKairosCronEnabled`), `keybindings`, and `claude-in-chrome`.
 
 ### Design Insights
 
@@ -536,6 +536,6 @@ Some bundled skills are gated by feature flags (e.g., `claudeApi` requires `BUIL
 
 ---
 
-> **Hands-on practice**: Create a custom skill in the `.claude/skills/` directory. Start with the simplest inline skill — all you need is a `skill-name/SKILL.md` file. Observe how it appears in the `/` completion list, and how the model auto-triggers it based on `when-to-use`.
+> **Hands-on practice**: Create a custom skill in the `.claude/skills/` directory. Start with the simplest inline skill — all you need is a `skill-name/SKILL.md` file. Observe how it appears in the `/` completion list, and how the model auto-triggers it based on `when_to_use`.
 
 Previous chapter: [Tool System](/en/docs/04-tool-system.md) | Next chapter: [Memory System](/en/docs/08-memory-system.md)

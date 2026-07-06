@@ -48,7 +48,7 @@ Claude Code defines 5 external permission modes and 2 internal modes:
 | `bypassPermissions` | Auto-approve everything | Full trust (dangerous) |
 | `dontAsk` | Auto-deny when no rules match | CI/CD environments |
 | `auto` (internal) | ML classifier makes automatic decisions | Internal use |
-| `bubble` (internal) | Coordinator-exclusive mode | Multi-Agent coordination |
+| `bubble` (internal) | Surfaces permission prompts to the parent terminal | (Implicitly forked) sub-Agent |
 
 Below is a detailed explanation of each mode's behavior and design motivation:
 
@@ -90,7 +90,7 @@ The opposite of bypassPermissions: converts all decisions that would "ask the us
 
 **`auto` Mode**: Uses an ML classifier (transcript classifier) to automatically make permission decisions without user interaction. The classifier analyzes the current conversation context and tool call intent to determine whether an operation is safe. This is a feature-gated internal capability (`TRANSCRIPT_CLASSIFIER`). When the classifier cannot determine or cumulative denials exceed a threshold, it falls back to interactive mode.
 
-**`bubble` Mode**: Exclusive to the multi-Agent coordinator (Coordinator). Worker Agents use this mode to "bubble" undecidable permission requests up to the coordinator level for handling, avoiding permission decision conflicts between Workers.
+**`bubble` Mode**: Used by (implicitly forked) sub-Agents. When a sub-Agent hits a permission prompt it cannot auto-decide, it "bubbles" the prompt up to the parent terminal / parent Agent to be displayed and handled there (in the source, `FORK_AGENT`'s `permissionMode: 'bubble'` is commented "surfaces permission prompts to the parent terminal").
 
 ## 12.3 Permission Rule System
 
@@ -155,20 +155,22 @@ The existence of `ask` rules is an important security design: even if you use by
 
 ### Rule Sources and Priority
 
-Rules can come from multiple sources, listed by priority (highest first):
+Rules can come from multiple sources. The source iterates over all of them in a fixed-order array, `PERMISSION_RULE_SOURCES`, collecting rules in this order (this is the **iteration order**, not a linear high-to-low priority):
 
-| Priority | Source | Description | Storage Location |
+| Iteration order | Source | Description | Storage Location |
 |----------|--------|-------------|-----------------|
-| 1 | `policySettings` | Enterprise management policy | Delivered via enterprise MDM |
-| 2 | `userSettings` | User global settings | `~/.claude/settings.json` |
-| 3 | `projectSettings` | Project-level settings | `.claude/settings.json` (committed to repo) |
-| 4 | `localSettings` | Local project settings | `.claude/settings.local.json` (not committed) |
-| 5 | `flagSettings` | CLI startup parameters | Command-line `--allowedTools`, etc. |
+| 1 | `userSettings` | User global settings | `~/.claude/settings.json` |
+| 2 | `projectSettings` | Project-level settings | `.claude/settings.json` (committed to repo) |
+| 3 | `localSettings` | Local project settings | `.claude/settings.local.json` (not committed) |
+| 4 | `flagSettings` | CLI startup parameters | Command-line `--allowedTools`, etc. |
+| 5 | `policySettings` | Enterprise management policy | Delivered via enterprise MDM |
 | 6 | `cliArg` | Runtime parameters | Passed in via API/SDK |
 | 7 | `command` | Command-level rules | Custom command definitions |
 | 8 | `session` | Session-level rules | Generated when user clicks "always allow" in dialog |
 
-This priority design meets enterprise scenario requirements: **enterprise policy (policySettings) has the highest priority**, allowing administrators to deliver mandatory rules via MDM that users cannot override. Additionally, the `allowManagedPermissionRulesOnly` option can restrict users to only using rules defined by management policy, further tightening control.
+One common misconception worth clearing up: permission rules are **additive** — rules from all sources are collected and then adjudicated globally by behavior, in the order **deny > ask > allow**, rather than a simple "higher source overrides lower source". The table order mainly determines which source `.find()` returns as the first match (used for display/reference) and the delete/override behavior — not who wins over whom. So do not read `userSettings` (array position 1) as overriding `policySettings` (array position 5).
+
+`policySettings` is the most authoritative not because it sits first in the source array, but because of three mechanisms: policy rules cannot be deleted (`deletePermissionRule` throws "Cannot delete permission rules from read-only settings" for policySettings), `allowManagedPermissionRulesOnly` can clear the rules of all non-policy sources, and deny globally takes precedence over allow. This is how administrators deliver mandatory rules via MDM that users cannot override.
 
 > Source: `src/utils/permissions/permissions.ts`, `src/utils/permissions/permissionsLoader.ts`
 
@@ -284,7 +286,7 @@ sequenceDiagram
 Key details:
 - The `createResolveOnce` guard ensures only the first decision takes effect
 - `userInteracted` flag: once the user touches the dialog, classifier results are discarded
-- **200ms anti-misclick grace period**: prevents accidental keypress leading to wrong decisions
+- **200ms anti-misclick grace period**: ignores accidental keypresses right after the dialog appears so they are not treated as "user has interacted" and do not prematurely cancel the racing classifier's auto-approval
 
 ### Code Implementation of the Racing Mechanism
 
@@ -332,7 +334,7 @@ async function handlePermission(request: PermissionRequest) {
 }
 ```
 
-Design rationale: The purpose of the 200ms grace period is to prevent users from accidentally pressing Enter when the dialog first appears, thereby mistakenly approving a dangerous operation. Once the user interacts with the dialog (any keypress or click), the `userInteracted` flag is set, and subsequent automated results from Hooks and classifiers are discarded — **human intent always takes priority**.
+Design rationale: The 200ms grace period protects the racing classifier's result, not to block mistaken approval — it prevents accidental keypresses right after the dialog appears from being counted as "user has interacted" and thereby prematurely canceling the racing ML classifier's auto-approval (the grace period only gates interactions that would set `userInteracted`; it does not gate the actual approval action `onAllow`). Once the user interacts with the dialog after the grace period (any keypress or click), the `userInteracted` flag is set, and subsequent automated results from Hooks and classifiers are discarded — **human intent always takes priority**.
 
 ### Permission Explainer
 
@@ -370,9 +372,9 @@ This sequential design avoids the chaotic scenario of multiple Workers simultane
 
 SwarmWorkerHandler is used in sub-Agent (Swarm Worker) scenarios. Its permission handling is the most conservative:
 
-- **Inherits parent Agent's permission decisions**: Sub-Agents do not independently initiate permission requests, but reuse permissions already approved by the parent Agent
+- **Tries the classifier first, forwards to the leader when undecided**: The sub-Agent does not make the final decision locally — for Bash commands it first awaits the ML classifier's attempt to auto-approve, and if that is undecided it forwards a *new* permission request to the leader (coordinator) via mailbox (`createPermissionRequest` + `sendPermissionRequestViaMailbox`) and waits for the leader's decision, rather than reusing permissions already approved by the parent Agent
 - **Restricted tool set**: Sub-Agents can only use the subset of tools explicitly authorized by the parent Agent
-- **No direct user interaction**: Sub-Agents cannot pop up confirmation dialogs; unauthorized operations are directly denied
+- **No direct user interaction**: The sub-Agent itself does not pop up a confirmation dialog, but the request is adjudicated by the leader — the leader can approve (`onAllow`) or reject (`onReject`); it is not the case that any unauthorized operation is simply denied outright. Only on the exceptional path where forwarding fails does it fall back to local UI handling
 
 ## 12.6 Multi-layer Security Verification for Bash Commands
 
@@ -638,12 +640,13 @@ Each tool call has a unique `toolUseID`, and decision records are stored in the 
 
 ```typescript
 // Telemetry events
-'tengu_tool_use_granted_user_permanent'    // User approved and saved
-'tengu_tool_use_granted_user_temporary'    // User one-time approval
-'tengu_tool_use_granted_classifier'        // ML classifier approved
-'tengu_tool_use_granted_config'            // Config rule approved
-'tengu_tool_use_rejected_in_prompt'        // Rejected in prompt
-'tengu_tool_use_denied_in_config'          // Config rule denied
+'tengu_tool_use_granted_in_prompt_permanent'   // User approved and saved
+'tengu_tool_use_granted_in_prompt_temporary'   // User one-time approval
+'tengu_tool_use_granted_by_classifier'         // ML classifier approved
+'tengu_tool_use_granted_in_config'             // Config rule approved
+'tengu_tool_use_granted_by_permission_hook'    // Permission Hook approved
+'tengu_tool_use_rejected_in_prompt'            // Rejected in prompt
+'tengu_tool_use_denied_in_config'              // Config rule denied
 
 // Code editing tools additionally record OTel counters
 // Including file extension (language info), used for analyzing editing patterns
@@ -950,7 +953,7 @@ mindmap
     Secure by Default
       default mode requires confirmation
       bypassPermissions requires explicit opt-in
-      Sandbox enabled by default
+      Sandbox off by default (opt-in)
       deny and safetyCheck take priority over bypass
     Extensible
       Hooks enable programmatic approval

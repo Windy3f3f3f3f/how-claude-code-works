@@ -79,7 +79,7 @@ export async function* query(
 ): AsyncGenerator<StreamEvent | Message | ToolUseSummaryMessage, Terminal>
 ```
 
-这是一个异步生成器——它不是一次性返回结果，而是**边执行边 yield 事件**。调用方（QueryEngine）通过 `for await (const msg of query(params))` 实时消费每一个事件：模型输出的每个 Token、每个工具调用的结果、压缩事件、错误恢复——所有这些都通过同一个 generator 管道流向 UI 层。
+这是一个异步生成器——它不是一次性返回结果，而是**边执行边 yield 事件**。调用方（交互式是 REPL，无头/SDK 是 QueryEngine）通过 `for await (const msg of query(params))` 实时消费每一个事件：模型输出的每个 Token、每个工具调用的结果、压缩事件、错误恢复——所有这些都通过同一个 generator 管道流向 UI 层。
 
 这种设计的好处是**零缓冲延迟**：用户在模型开始生成的瞬间就能看到输出，而不需要等待整个响应完成。
 
@@ -91,20 +91,20 @@ export async function* query(
 
 注意 `query()` 的返回类型 `AsyncGenerator<..., Terminal>`——`Terminal` 是 generator 的 **return type**，代表查询的最终状态，与 yield 出的中间事件流是分离的。这种"双通道"（yield 流式事件 + return 最终结果）只有 generator 能干净地表达。
 
-整个数据流形成了一个嵌套的 generator 管道：`REPL.tsx` → `QueryEngine.submitMessage()` → `query()` → `queryModelWithStreaming()`（`services/api/claude.ts`）。每一层 generator 在管道上叠加自己的处理逻辑（压缩、错误恢复、权限检查），但对上层来说，它只是一个统一的 `AsyncGenerator` 事件流。
+整个数据流形成嵌套的 generator 管道，且入口分两条：**交互式** REPL 直接调用 `query()`（`REPL.tsx:146` `import { query }`，主循环在 `REPL.tsx:2793` `for await (const event of query({...}))`）；**无头 / `-p` / SDK** 则先经会话引擎再汇入核心循环（`cli/print.ts` → `QueryEngine.submitMessage()` / `ask()` → `query()`）。两条路径最终都收敛到同一个 `query()` → `queryModelWithStreaming()`（`services/api/claude.ts`）。每一层 generator 在管道上叠加自己的处理逻辑（压缩、错误恢复、权限检查），但对上层来说，它只是一个统一的 `AsyncGenerator` 事件流。
 
 ### 2. 防御性分层安全
 
 权限系统采用多层防御：
 
 ```
-权限规则匹配 (src/hooks/toolPermission/)
+权限规则匹配 (src/utils/permissions/)
     ↓ 通过
 Bash AST 分析 (src/utils/bash/, tree-sitter 解析)
     ↓ 通过
 23 项静态安全验证器
     ↓ 通过
-ML 分类器 (yoloClassifier)
+LLM 分类器 (yoloClassifier)
     ↓ 通过
 用户确认对话框
 ```
@@ -113,13 +113,13 @@ ML 分类器 (yoloClassifier)
 
 这是经典的**纵深防御**：即使某一层有 bug 或被绕过，其他层仍然可以阻止危险操作。每一层使用不同的技术手段，覆盖不同类别的风险：
 
-1. **权限规则匹配**（`src/hooks/toolPermission/`）：这是**策略层**——用户通过 CLAUDE.md 的 `allowedTools` 或 `--allowedTools` 标志声明哪些操作是被允许的。这一层表达的是用户意图："在这个项目中，运行 `npm test` 总是安全的"。
+1. **权限规则匹配**（`src/utils/permissions/`，由 `permissions.ts` 的 `hasPermissionsToUseTool` 做 allow/deny 判定）：这是**策略层**——用户通过 CLAUDE.md 的 `allowedTools` 或 `--allowedTools` 标志声明哪些操作是被允许的。这一层表达的是用户意图："在这个项目中，运行 `npm test` 总是安全的"。（`src/hooks/toolPermission/` 是这层之上按执行场景分派权限请求、编排确认对话框的胶水层，本身不是规则引擎。）
 2. **Bash AST 分析**（`src/utils/bash/`, tree-sitter）：不是用正则匹配命令字符串，而是用 tree-sitter 将 Bash 命令解析为抽象语法树。为什么不用正则？因为 Bash 语法极其灵活——`r"m" -rf /`、`$(echo rm) -rf /`、`eval "rm -rf /"` 这些变形都能绕过简单的字符串匹配，但 AST 分析能识别出实际执行的命令。
 3. **23 项静态安全验证器**：硬编码的已知危险模式检查。这是"白名单/黑名单"层——某些操作（如写入 `/etc/passwd`、修改 SSH 配置）无论上下文如何都应该被拦截。
-4. **ML 分类器**（yoloClassifier）：一个经过训练的分类模型，能根据命令的语义上下文判断安全性。它捕获的是静态规则覆盖不到的"新型"危险模式——比如一条看起来无害但在当前上下文中可能造成问题的命令。
+4. **LLM 分类器**（yoloClassifier）：通过 `sideQuery` 向 Claude 模型发起带专用 system prompt 的旁路请求，对命令做两阶段（stage1 / stage2）安全判定——不是一个单独训练的分类模型，而是复用主模型做旁路推理。它捕获的是静态规则覆盖不到的"新型"危险模式——比如一条看起来无害但在当前上下文中可能造成问题的命令。
 5. **用户确认对话框**：最终的人类审核。即使所有自动化层都放行了，用户仍然可以看到即将执行的操作并选择拒绝。
 
-关键设计洞察：**各层使用完全不同的技术**（规则匹配、语法解析、机器学习、人类判断），这意味着单一类别的 bug 无法同时绕过所有层。即使权限规则配置错误地放行了一条命令，tree-sitter AST 分析仍然会检测到 `rm -rf /` 这样的结构性危险模式。
+关键设计洞察：**各层使用完全不同的技术**（规则匹配、语法解析、LLM 判定、人类判断），这意味着单一类别的 bug 无法同时绕过所有层。即使权限规则配置错误地放行了一条命令，tree-sitter AST 分析仍然会检测到 `rm -rf /` 这样的结构性危险模式。
 
 ### 3. 编译时 Feature Gate
 
@@ -155,13 +155,13 @@ const taskSummaryModule = feature('BG_SESSIONS')
 
 全局状态集中于 `bootstrap/state.ts`（1,758 行，150+ 访问器）。为什么不直接用全局变量？
 
-在一个拥有 66+ 工具、多个子 Agent、压缩管道和 React UI 的系统中，共享状态是不可避免的——当前使用的模型名、会话 ID、Feature Flag 缓存、累计成本、文件修改状态等，这些信息需要被多个子系统同时访问和修改。朴素的全局变量方案会带来三个实际问题：
+在一个拥有约 55 个工具（工具注册表口径，含 feature-gated；快照可见约 40 个 `buildTool` 定义）、多个子 Agent、压缩管道和 React UI 的系统中，共享状态是不可避免的——当前使用的模型名、会话 ID、Feature Flag 缓存、累计成本、文件修改状态等，这些信息需要被多个子系统同时访问和修改。朴素的全局变量方案会带来三个实际问题：
 
 1. **import 循环**：模块 A 导入 B 的状态，B 导入 C 的工具，C 又导入 A 的状态——在一个 1,900 文件的项目中，这种循环几乎不可避免
 2. **不可追踪的修改**：当某个 bug 导致模型名被意外改变，你无法设断点查看"是谁在什么时候改了这个值"
 3. **React 渲染问题**：直接修改全局对象的属性不会触发 React 组件的重新渲染
 
-`bootstrap/state.ts` 的解决方案是通过显式的 getter/setter 函数暴露状态（如 `getSessionId()`、`getTotalCost()`、`setCurrentModel()`），而不是导出可变对象。每个模块只导入自己需要的 getter/setter 函数，从而打破 import 循环；每次修改都经过函数调用，可以轻松添加日志或断点追踪。
+`bootstrap/state.ts` 的解决方案是通过显式的 getter/setter 函数暴露状态（如 `getSessionId()`、`getTotalCostUSD()`、`setMainLoopModelOverride()`），而不是导出可变对象。每个模块只导入自己需要的 getter/setter 函数，从而打破 import 循环；每次修改都经过函数调用，可以轻松添加日志或断点追踪。
 
 UI 状态使用 Zustand 模式的不可变更新——`setAppState(prev => ({ ...prev, newField: value }))`——保证 React 组件能正确感知状态变化。
 
@@ -187,7 +187,7 @@ Snip → Microcompact → Context Collapse → Autocompact 四级压缩流水线
 `Tool` 接口（`src/Tool.ts`）拥有约 20 个字段和方法，每一个都在统一管道中扮演角色：
 - `isReadOnly()`：告诉权限系统这个工具是否只读——只读工具（如 Grep、Glob）可以跳过用户确认
 - `isConcurrencySafe()`：告诉 `StreamingToolExecutor` 这个工具能否与其他工具并行执行——Grep 可以，但 FileEdit 不行（可能产生写冲突）
-- `shouldDefer`：告诉 API 层是否延迟发送完整 schema——66+ 个工具的 schema 加起来占用大量 token，不常用的工具可以按需加载
+- `shouldDefer`：告诉 API 层是否延迟发送完整 schema——数十个工具的 schema 加起来占用大量 token，不常用的工具可以按需加载
 - `inputSchema`（Zod）：模型生成的参数在执行前必须通过 Schema 验证，防止畸形输入触达工具执行层
 - `interruptBehavior()`：定义用户中断时工具的行为——有些工具可以立即中断，有些需要清理
 
@@ -204,7 +204,7 @@ Snip → Microcompact → Context Collapse → Autocompact 四级压缩流水线
 | **Message** | 对话中的一条消息，包含 `UserMessage`、`AssistantMessage`、`ToolUseSummaryMessage` 等子类型 | `types/message.ts` |
 | **StreamEvent** | generator 管道中 yield 的事件单元，代表一个 token、工具结果或状态变更 | `types/message.ts` |
 | **Terminal / Continue** | query 循环的两种转移状态——`Terminal` 表示循环结束，`Continue` 表示需要继续下一轮迭代 | `query/transitions.ts` |
-| **QueryEngine** | 会话级引擎，管理对话生命周期（持久化、预算、结果组装），是 UI 层与核心循环之间的边界 | `QueryEngine.ts` |
+| **QueryEngine** | 会话级引擎，管理对话生命周期（持久化、预算、结果组装），是无头 / SDK 入口与核心循环之间的边界（交互式 REPL 不经它、直接调用 `query()`） | `QueryEngine.ts` |
 
 ## 1.4 源码目录结构
 
@@ -238,7 +238,7 @@ src/
 │   ├── Doctor.tsx           # 诊断界面
 │   └── ResumeConversation.tsx
 │
-├── tools/                   # 66+ 内置工具
+├── tools/                   # 内置工具（快照约 40 个 buildTool 定义，注册表含 feature-gated 约 55 个）
 │   ├── BashTool/            # Shell 命令执行（含 AST 安全分析）
 │   ├── AgentTool/           # 子 Agent 派生（支持 worktree 隔离）
 │   ├── FileReadTool/        # 文件读取（支持图片、PDF、Notebook）
@@ -260,18 +260,18 @@ src/
 │   │   ├── autoCompact.ts   # 自动压缩触发（阈值计算、条件判断）
 │   │   └── compact.ts       # 摘要生成引擎（1,705 行）
 │   │                        # fork 子 Agent 生成对话摘要，压缩后恢复最近文件和技能
-│   ├── mcp/                 # MCP 协议集成（7 种传输）
+│   ├── mcp/                 # MCP 协议集成（6 种传输，8 种服务端配置类型）
 │   ├── oauth/               # OAuth 2.0 + PKCE
 │   ├── plugins/             # 插件系统
 │   └── lsp/                 # 语言服务器协议
 │
-├── hooks/                   # 权限与 Hook 处理
-│   └── toolPermission/      # 工具权限判定
-│       └── handlers/        # 3 种权限处理器：规则匹配、Hook、用户确认
+├── hooks/                   # React 自定义 hooks（UI 层）；其中 toolPermission/ 处理工具权限请求
+│   └── toolPermission/      # 工具权限请求的分场景处理与对话框编排
+│       └── handlers/        # 按执行场景分的 3 个权限处理器：interactive（交互确认）、coordinator、swarmWorker
 │
 ├── coordinator/             # 多 Agent 协调器（内部功能，Feature-gated）
-├── memdir/                  # 记忆系统（~/.claude/memory/ 管理）
-├── skills/                  # 技能系统（18+ 内置技能）
+├── memdir/                  # 记忆系统（按项目存于 ~/.claude/projects/<项目slug>/memory/）
+├── skills/                  # 技能系统（skills/bundled/ 下 14 个 bundled 技能，registerBundledSkill 注册）
 ├── ink/                     # 自定义终端渲染器（~1.0MB 核心，React→终端输出）
 ├── vim/                     # Vim 模式
 ├── schemas/                 # Zod Schema 定义
@@ -290,16 +290,16 @@ src/
 sequenceDiagram
     participant User as 用户终端
     participant REPL as REPL.tsx
-    participant QE as QueryEngine
+    participant QE as QueryEngine<br/>(无头/-p/SDK 入口)
     participant Q as query()
     participant API as callModel()
     participant STE as StreamingToolExecutor
     participant Tool as 工具执行
 
     User->>REPL: 输入消息
-    REPL->>QE: submitMessage(prompt)
-    QE->>QE: processUserInput()<br/>斜杠命令/附件处理
-    QE->>Q: query(params)<br/>async generator
+    Note over REPL,QE: 交互式：REPL 直接调用 query()<br/>无头/-p/SDK：先经 QueryEngine.submitMessage()/ask()
+    REPL->>REPL: processUserInput()<br/>斜杠命令/附件处理
+    REPL->>Q: query(params)<br/>async generator
 
     loop 查询循环（直到无工具调用）
         Q->>Q: 4级压缩流水线<br/>Snip→Micro→Collapse→Auto
@@ -316,14 +316,13 @@ sequenceDiagram
         end
     end
 
-    Q-->>QE: return Terminal
-    QE-->>REPL: yield 最终结果
+    Q-->>REPL: return Terminal（交互式）<br/>无头/SDK 经 QueryEngine 组装
     REPL-->>User: 显示响应
 ```
 
 让我们沿着数据流逐步展开，理解每个阶段发生了什么：
 
-**Step 1：用户输入进入 REPL**。React 组件 `REPL.tsx` 捕获用户的文本输入。如果是斜杠命令（如 `/clear`、`/compact`），在本地直接处理，永远不会发送到 API。普通消息则传递给 `QueryEngine.submitMessage()`。
+**Step 1：用户输入进入 REPL**。React 组件 `REPL.tsx` 捕获用户的文本输入。如果是斜杠命令，命令文本本身不会作为用户消息发给模型；纯本地命令（如 `/clear`、`/help`）完全在本地处理，而 `/compact` 这类命令在本地处理过程中仍会自行发起一次 API 调用（fork 子查询生成摘要）。普通消息则进入核心循环——交互式由 REPL 直接调用 `query()`，无头 / `-p` / SDK 则先经 `QueryEngine.submitMessage()`。
 
 **Step 2：QueryEngine 准备查询**。`processUserInput()` 处理消息中的附件（图片缩放、文件引用解析），构建包含消息历史、系统提示词、工具列表和权限上下文的 `QueryParams` 对象，然后调用 `query()` 启动核心循环。
 
@@ -389,14 +388,14 @@ graph TB
     CLI --> Print["-p 单次查询模式"]
     CLI --> SDK[SDK/Bridge 模式]
 
-    REPL --> QE[QueryEngine 会话引擎]
-    Print --> QE
+    REPL --> Query[query 核心循环]
+    Print --> QE[QueryEngine 会话引擎]
     SDK --> QE
 
-    QE --> Query[query 核心循环]
+    QE --> Query
 
     Query --> API[API 服务层]
-    Query --> Tools[工具系统 66+]
+    Query --> Tools[工具系统 ~55]
     Query --> Context[上下文系统]
 
     API --> Retry[重试与降级]
@@ -421,19 +420,19 @@ graph TB
 
 这张图看起来像一个普通的分层架构，但每一层的设计决策都值得理解：
 
-**入口层（main.tsx）**：CLI 入口处理三种截然不同的运行模式——REPL（交互式终端）、Print 模式（`-p` 标志，单次查询后退出）和 SDK/Bridge 模式（供第三方程序调用）。关键设计是：**三种模式全部汇聚到同一个 QueryEngine**。这意味着核心 Agent 循环是模式无关的——无论 Claude Code 是被人类交互使用、被 CI 脚本以 `-p` 调用、还是被 IDE 插件通过 SDK 集成，底层执行的都是同一个 `query()` 函数。这对测试也很有价值：Print 模式本质上就是一个无头测试工具。
+**入口层（main.tsx）**：CLI 入口处理三种截然不同的运行模式——REPL（交互式终端）、Print 模式（`-p` 标志，单次查询后退出）和 SDK/Bridge 模式（供第三方程序调用）。关键设计是：**三种模式最终都汇聚到同一个 `query()` 核心循环**（交互式由 REPL 直接进入，`-p` / SDK 先经 QueryEngine 会话层）。这意味着核心 Agent 循环是模式无关的——无论 Claude Code 是被人类交互使用、被 CI 脚本以 `-p` 调用、还是被 IDE 插件通过 SDK 集成，底层执行的都是同一个 `query()` 函数。这对测试也很有价值：Print 模式本质上就是一个无头测试工具。
 
-**会话层（QueryEngine）**：管理一次对话的完整生命周期——消息持久化（每次交互自动保存）、成本追踪（累计 token 和美元开销）、预算执行（task budget 限额）、结构化输出重试。它是"用户交互"和"Agent 执行"之间的边界。当一条新消息到达时，QueryEngine 判断它是斜杠命令、文件附件还是普通 prompt，做相应的预处理后才转交给核心循环。
+**会话层（QueryEngine）**：管理一次对话的完整生命周期——消息持久化（每次交互自动保存）、成本追踪（累计 token 和美元开销）、预算执行（task budget 限额）、结构化输出重试。在无头 / `-p` / SDK 路径上，它是"用户输入"和"Agent 执行"之间的边界（交互式则由 REPL 承担这一步）。当一条新消息到达时，QueryEngine 判断它是斜杠命令、文件附件还是普通 prompt，做相应的预处理后才转交给核心循环。
 
 **核心循环（query）**：这是 Claude Code 的心脏。一个 `while(true)` 循环反复执行：压缩上下文 → 调用 API → 执行工具 → 判断是否继续。循环携带可变的 `State` 对象（`query.ts:204`），包括消息历史、压缩追踪状态、输出 token 恢复计数、turn 计数等。循环有 7 个不同的"继续点"（Continue Sites），分别处理正常工具循环、上下文过长恢复、压缩触发重试等场景。
 
-**服务层（API + 工具 + 上下文）**：三个独立的子系统，由核心循环编排协调。API 服务处理模型通信（流式传输、重试策略、提示词缓存）。工具系统提供 66+ 种能力（文件操作、搜索、Agent 派生、MCP 桥接）。上下文系统负责构建系统提示词、注入 CLAUDE.md 内容、管理 git 状态信息。三者之间互不依赖。
+**服务层（API + 工具 + 上下文）**：三个独立的子系统，由核心循环编排协调。API 服务处理模型通信（流式传输、重试策略、提示词缓存）。工具系统提供约 55 种能力（文件操作、搜索、Agent 派生、MCP 桥接）。上下文系统负责构建系统提示词、注入 CLAUDE.md 内容、管理 git 状态信息。三者之间互不依赖。
 
 **基础设施层（OAuth、History、Telemetry、Plugins）**：横切关注点，支撑所有其他层但不参与主循环。OAuth 处理认证，History 提供对话持久化和恢复（`claude --resume`），Telemetry（懒加载，~400KB+）追踪使用数据，Plugins 扩展工具和 Hook。
 
 ### 模块依赖规则
 
-这个分层有一条关键的依赖规则：**核心循环（query.ts）依赖服务层，但永远不依赖 UI 层；UI 层（REPL.tsx）依赖 QueryEngine，但永远不直接依赖 query.ts**。这意味着你可以把整个终端 UI 替换为 Web UI，只需要重写 REPL 层——QueryEngine 及其以下的所有模块完全不用改动。SDK 模式就是这个设计的直接体现：它绕过了整个 UI 层，直接与 QueryEngine 交互。
+这个分层有一条关键的依赖规则：**核心循环（query.ts）依赖服务层，但永远不依赖 UI 层**——`query.ts` 不 import `REPL.tsx`，所以你可以把整个终端 UI 替换为 Web UI，核心循环及其以下的所有模块完全不用改动。反向的依赖则是单向的：交互式 UI（`REPL.tsx`）直接 import 并驱动 `query()`（`REPL.tsx:146` `import { query }`），而无头 / `-p` / SDK 路径先经 `QueryEngine` 会话层再进入同一个 `query()`。SDK 模式就是后者的直接体现：它不走终端 UI，直接通过 QueryEngine 与核心循环交互。
 
 ## 1.8 代码规模参考
 
@@ -442,12 +441,12 @@ graph TB
 | TypeScript 文件 | ~1,332 |
 | TSX (React) 文件 | ~552 |
 | 总行数 | 512,000+ |
-| 内置工具数 | 66+ |
+| 内置工具数 | ~55（注册表 tools.ts；快照约 40 个 buildTool 定义） |
 | Hook 事件类型 | 23+ |
 | 安全验证器 | 23 项 |
 | MCP 传输类型 | 7 种 |
 | 权限模式 | 5+2 种 |
-| 内置技能 | 18+ |
+| 内置技能 | 14 |
 
 ---
 

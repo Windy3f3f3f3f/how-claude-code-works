@@ -261,7 +261,7 @@ Claude Code 有 6 个内置 Agent 类型，每个有独立的系统提示词。
 | Explore | `Explore` | haiku | 只读（无 Edit/Write/Agent） |
 | Plan | `Plan` | inherit | 只读（同 Explore） |
 | General-Purpose | `general-purpose` | 默认子 Agent 模型 | 全部工具 |
-| Verification | `verification` | inherit | 只读（无 Edit/Write） |
+| Verification | `verification` | inherit | 只读（`disallowedTools` 同 Explore；但提示词要它跑 build/test/server，可向 /tmp 写临时脚本，见下文） |
 | Statusline-Setup | `statusline-setup` | sonnet | Read, Edit |
 | Claude-Code-Guide | `claude-code-guide` | haiku | Glob, Grep, Read, WebFetch, WebSearch |
 
@@ -3972,7 +3972,7 @@ export const DESCRIPTION = ''
 - **标记之前**：静态内容，使用 `cacheScope: 'global'` 全局缓存，所有用户共享同一份缓存
 - **标记之后**：动态内容，每个会话独立，包含环境信息、记忆、MCP 指令等
 
-这个设计确保了 ~70% 的提示词内容可以命中全局缓存，显著降低延迟和成本。
+这个设计让占系统提示词静态大头的 7 个 section 以 `cacheScope: 'global'` 全局缓存、跨会话/跨用户复用，显著降低延迟和成本。
 
 ### 特殊模式
 

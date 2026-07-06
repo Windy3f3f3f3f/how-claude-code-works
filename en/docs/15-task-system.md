@@ -53,8 +53,10 @@ A task's lifecycle follows a simple state machine:
 
 ```
 pending ──→ in_progress ──→ completed
-                              │
-              deleted ←───────┘ (special state, file is deleted directly)
+   │             │              │
+   └─────────────┼──────────────┘
+                 ↓
+              deleted   (special action: a task in any state can be deleted directly)
 ```
 
 - `pending`: Just created, awaiting claim
@@ -417,13 +419,19 @@ Through the `taskListId` resolution mechanism (see 11.2), all team members — w
 
 ### Automatic Ownership
 
-When an Agent marks a task as `in_progress`, if no owner is explicitly specified, the system auto-assigns one:
+When an Agent marks a task as `in_progress`, provides no explicit owner, and the task currently has no owner, the system auto-assigns one:
 
 ```typescript
 // TaskUpdateTool.ts
-if (isAgentSwarmsEnabled() && statusChanged && newStatus === 'in_progress') {
-  if (!input.owner && context.agentName) {
-    updates.owner = context.agentName
+if (
+  isAgentSwarmsEnabled() &&
+  status === 'in_progress' &&
+  owner === undefined &&    // no explicit owner passed
+  !existingTask.owner       // and the task currently has no owner (an existing owner is never reassigned)
+) {
+  const agentName = getAgentName()  // resolved from teammate context; ToolUseContext only exposes agentId
+  if (agentName) {
+    updates.owner = agentName
   }
 }
 ```
@@ -436,9 +444,10 @@ When a task's owner changes, the new owner receives a notification via mailbox:
 
 ```typescript
 // Notification includes full task context
+// senderName = getAgentName() || 'team-lead'
 {
   taskId, subject, description,
-  assignedBy: context.agentName,
+  assignedBy: senderName,
   timestamp: new Date().toISOString()
 }
 ```
@@ -458,14 +467,16 @@ async function claimTaskWithBusyCheck(taskListId, taskId, claimantAgentId) {
   // Under lock, check if this agent still has incomplete tasks
   const allTasks = await listTasks(taskListId)
   const busyTasks = allTasks.filter(
-    t => t.owner === claimantAgentId && t.status !== 'completed'
+    t => t.status !== 'completed' &&
+         t.owner === claimantAgentId &&
+         t.id !== taskId  // exclude the target task itself, or re-claiming your own task falsely reports agent_busy
   )
   if (busyTasks.length > 0) {
     return { success: false, reason: 'agent_busy', busyWithTasks: ... }
   }
   
-  // Check passed, complete the claim under lock
-  await updateTaskUnsafe(taskListId, taskId, { owner: claimantAgentId })
+  // Check passed, complete the claim under lock (updateTask also takes a task-level lock)
+  await updateTask(taskListId, taskId, { owner: claimantAgentId })
 }
 ```
 
@@ -476,16 +487,24 @@ The reason for using a **directory-level lock** rather than a task-level lock he
 When a teammate exits, `unassignTeammateTasks` releases all incomplete tasks it held:
 
 ```typescript
-export async function unassignTeammateTasks(taskListId, agentId) {
-  const tasks = await listTasks(taskListId)
+export async function unassignTeammateTasks(
+  teamName, teammateId, teammateName,
+  reason,  // 'terminated' | 'shutdown'
+) {
+  const tasks = await listTasks(teamName)
   for (const task of tasks) {
-    if (task.owner === agentId && task.status !== 'completed') {
-      await updateTask(taskListId, task.id, {
+    // owner may be recorded as either an id or a name — match both
+    if (
+      task.status !== 'completed' &&
+      (task.owner === teammateId || task.owner === teammateName)
+    ) {
+      await updateTask(teamName, task.id, {
         owner: undefined,
         status: 'pending',  // Back to pending, available for other agents to claim
       })
     }
   }
+  // The real implementation also returns { unassignedTasks, notificationMessage } for notifying teammates
 }
 ```
 

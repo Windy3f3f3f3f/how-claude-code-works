@@ -199,7 +199,7 @@ Phase 5: Call ExitPlanMode
   → 提交计划等待用户审批
 ```
 
-每个阶段的 Agent 数量是动态的，取决于用户的订阅类型（`src/utils/planModeV2.ts:5-29`）：
+**Phase 2 的 Plan Agent 数量**随订阅类型变化（`src/utils/planModeV2.ts:5-29`）；而 **Phase 1 的 Explore Agent 数量固定为最多 3 个**，与订阅无关（`getPlanModeV2ExploreAgentCount()` 恒返回 3，仅环境变量 `CLAUDE_CODE_PLAN_V2_EXPLORE_AGENT_COUNT` 可覆盖）：
 
 ```typescript
 export function getPlanModeV2AgentCount(): number {
@@ -311,7 +311,7 @@ Slug 在会话内缓存（`planSlugCache: Map<SessionId, string>`），确保同
 5. plan_file_reference → 从 auto-compact 创建的附件中提取
 ```
 
-为了应对远程场景，Claude Code 在每次 `normalizeToolInput()` 时都会调用 `persistFileSnapshotIfRemote()`，将计划内容作为 `file_snapshot` 系统消息写入 transcript——这是远程会话中唯一可靠的持久化渠道。
+为了应对远程场景，Claude Code 只在 `normalizeToolInput()` 处理 `ExitPlanMode` 这一个工具时（`switch` 的 `EXIT_PLAN_MODE_V2_TOOL_NAME` 分支，`src/utils/api.ts:578`），以及 `ExitPlanMode.call()` 写入用户编辑后的计划时（`ExitPlanModeV2Tool.ts:260`），才调用 `persistFileSnapshotIfRemote()`，将计划内容作为 `file_snapshot` 系统消息写入 transcript——这是远程会话中唯一可靠的持久化渠道。
 
 Fork 会话（`copyPlanForFork()`，`src/utils/plans.ts:239-264`）更简单但有一个关键细节：**生成新的 slug**。如果复用原始 slug，原始会话和 fork 会话会写入同一个文件——导致互相覆盖。
 
@@ -531,11 +531,11 @@ case EXIT_PLAN_MODE_V2_TOOL_NAME: {
 
 1. **主动降权换信任**：Plan 模式是整个 Claude Code 中唯一一个"模型主动要求降低自己权限"的机制。这种设计将"我需要权限"的传统模式反转为"我主动放弃权限以换取你的信任"——当模型判断任务复杂时，它选择先束缚自己的双手，只用眼睛看，直到你说"可以动手了"。
 
-2. **对称的状态转换**：进入时 `prePlanMode = currentMode`，退出时 `currentMode = prePlanMode`。这种对称性保证了 Plan 模式是一个"纯函数"——它不产生副作用，退出后系统状态与进入前完全一致（除了多了一个计划文件）。
+2. **对称的状态转换**：进入时 `prePlanMode = currentMode`，退出时 `currentMode = prePlanMode`。这种对称性让 Plan 模式在大多数情况下能干净地恢复到进入前的模式。但它并非严格的"纯函数"——退出时会置若干一次性退出标志（`setHasExitedPlanMode` / `setNeedsPlanModeExitAttachment` 等），且断路器触发时 `auto` 会被降级为 `default`（见 §9.6.3），此时退出后的模式与进入前并不完全一致。
 
 3. **渐进式 prompt 注入**：full → sparse → full 的节流策略在 token 成本和模型记忆之间找到了平衡。完整指令约 4,700 字符（~1,200 token），sparse 提醒仅 300 字符（~75 token）。按平均 15 轮的 plan 会话计算，节流策略节省了约 10,000 token。
 
-4. **实验驱动的迭代**：Phase 4 的四种变体不是拍脑袋设计的——它们基于 26.3M 次会话的基线数据，用科学的 A/B 测试验证"更短的计划是否导致更好的用户满意度"。这体现了工程团队将**用户满意度（拒绝率）而非技术指标（计划长度）**作为优化目标的思路。
+4. **实验驱动的迭代**：Phase 4 的四种变体不是拍脑袋设计的——它们基于 N=26.3M 的基线样本（14 天，按 plan-exit 计），用科学的 A/B 测试验证"更短的计划是否导致更好的用户满意度"。这体现了工程团队将**用户满意度（拒绝率）而非技术指标（计划长度）**作为优化目标的思路。
 
 5. **容灾设计无处不在**：从 5 层计划恢复策略、到断路器防御、到重入引导，Plan 模式的每个环节都在问"如果出了问题怎么办"。这不是过度设计——在一个 AI 系统中，模型的行为本质上是不可预测的，防御性编程是唯一合理的策略。
 

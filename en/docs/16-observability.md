@@ -224,7 +224,7 @@ Observability and privacy are inherently in tension: record more and you can deb
 | Full system prompt | beta detailed tracing only | not in normal export |
 | Model reasoning text | internal only | never exported externally |
 
-(The first four rows have corresponding redaction code in the snapshot; `OTEL_LOG_RAW_API_BODIES` and the assistant-response switch postdate the snapshot, per official docs.)
+(Rows 1, 3, and 4 — user prompt / tool arguments and commands / tool input-output — have corresponding redaction code in the snapshot; row 2 "assistant reply" (`OTEL_LOG_ASSISTANT_RESPONSES`) and row 5 `OTEL_LOG_RAW_API_BODIES` both postdate the snapshot, per official docs.)
 
 A few design intentions are worth naming.
 
@@ -232,7 +232,7 @@ Code and file contents never enter metrics or events. The docs say plainly that 
 
 Privacy gating and cardinality control are often two sides of the same knob. `prompt.id` goes into events but not metrics; `app.version` is off by default — one fear is leaking attributable information, the other is cardinality explosion, but they turn the same set of switches. That's no coincidence: putting less information into the aggregation backend both saves cost and protects privacy, and the two goals often point to the same decision.
 
-Subprocesses have a point that's easy to get backwards: CC does not pass the `OTEL_*` export configuration to the subprocesses it spawns (Bash, hooks, MCP servers, language servers can't get your backend address or credentials, lest the config leak to a third party); but per the current docs, when tracing is active it does inject the "which trace is this" correlation info (W3C's `TRACEPARENT`) into Bash/PowerShell subprocesses, so their spans hang on the same trace. What's passed is correlation info, not export credentials — don't conflate the two. (Both env variables are un-grep-able in the snapshot, postdate it, and follow the official docs.)
+Subprocesses have a point that's easy to get backwards: by default (an ordinary local session) CC passes its entire environment through to the subprocesses it spawns, `OTEL_*` included; only when claude-code-action sets `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` — i.e. a CI scenario where the session is exposed to untrusted content (with `allowed_non_write_users` configured) — does CC strip the four OTLP header vars that carry `Authorization=Bearer` tokens (the `OTEL_EXPORTER_OTLP_HEADERS` family) from the subprocess environment, lest credentials leak via shell expansion to a third party; the backend address `OTEL_EXPORTER_OTLP_ENDPOINT` is never stripped under any circumstance. But per the current docs, when tracing is active it does inject the "which trace is this" correlation info (W3C's `TRACEPARENT`) into Bash/PowerShell subprocesses, so their spans hang on the same trace. What's passed is correlation info, not export credentials — don't conflate the two. (Both env variables are un-grep-able in the snapshot, postdate it, and follow the official docs.)
 
 ---
 

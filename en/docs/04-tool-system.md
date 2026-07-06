@@ -1,6 +1,6 @@
 # Chapter 4: Tool System
 
-> The tool system is the carrier of Claude Code's capabilities. 66+ built-in tools + MCP extensions = unlimited possibilities.
+> The tool system is the carrier of Claude Code's capabilities. 60+ built-in tools + MCP extensions = unlimited possibilities.
 
 All of Claude Code's capabilities—file read/write, Shell commands, code search, sub-Agent spawning, MCP external service calls—are exposed to the model through a unified tool system. The model does not directly operate on the filesystem or network; instead, it accomplishes all side-effecting operations by calling tools. The tool system is the sole bridge connecting "model intelligence" to "the real world."
 
@@ -116,7 +116,7 @@ The benefits of this separation are:
 
 ```mermaid
 flowchart TD
-    L1[Layer 1: getAllBaseTools<br/>Directly imported core tools ~20<br/>+ Feature-gated conditional imports ~46] --> L2[Layer 2: getTools<br/>Filter based on permission context]
+    L1[Layer 1: getAllBaseTools<br/>Static imports ~31<br/>+ conditional loads ~20 (plus 3 lazy requires)] --> L2[Layer 2: getTools<br/>Filter based on permission context]
     L2 --> L3[Layer 3: assembleToolPool<br/>Built-in tools + MCP bridged tools<br/>Deduplication]
     L3 --> Final[Final tool pool]
 ```
@@ -125,7 +125,7 @@ flowchart TD
 
 `getAllBaseTools()` (`src/tools.ts:193-251`) is the **single source of truth** for all tools. It returns all potentially available tools under the current build environment.
 
-Core tools (approximately 20) are directly imported via standard `import` and are always present:
+Core tools (approximately 31 static `import`s) are directly imported and are always present (the full tool set enumerates to roughly 55-60):
 
 ```typescript
 import { BashTool } from './tools/BashTool/BashTool.js'
@@ -134,7 +134,7 @@ import { FileEditTool } from './tools/FileEditTool/FileEditTool.js'
 // ... other core tools
 ```
 
-Feature-gated tools (approximately 46) are loaded via conditional `require()`:
+Feature-gated tools (approximately 20) are loaded via conditional `require()` (there are also 3 Team/SendMessage tools that use lazy `require()` to break a circular dependency, not as feature gates):
 
 ```typescript
 const SleepTool = feature('PROACTIVE') || feature('KAIROS')
@@ -191,7 +191,7 @@ This code has two key design decisions:
 
 ## 4.3 Built-in Tool Inventory
 
-Claude Code includes **66+ built-in tools**, organized into 6 categories by functional domain. These categories reflect the core capability model of a coding agent: **File Operations** are the foundation (read, write, and search are the highest-frequency operations), **Agent Management & Team Collaboration** supports multi-Agent execution, **User Interaction** and **System** ensure human-in-the-loop control, and **Tool Extensions** unify skills, deferred tool loading, and MCP/LSP external capabilities. The guiding principle for tool selection is "cover 95% of a developer's daily workflow"—the remaining 5% is handled by BashTool (the universal fallback), skills, and MCP extensions.
+Claude Code includes **60+ built-in tools**, organized into 6 categories by functional domain. These categories reflect the core capability model of a coding agent: **File Operations** are the foundation (read, write, and search are the highest-frequency operations), **Agent Management & Team Collaboration** supports multi-Agent execution, **User Interaction** and **System** ensure human-in-the-loop control, and **Tool Extensions** unify skills, deferred tool loading, and MCP/LSP external capabilities. The guiding principle for tool selection is "cover 95% of a developer's daily workflow"—the remaining 5% is handled by BashTool (the universal fallback), skills, and MCP extensions.
 
 | Category | Tool | Description |
 |----------|------|-------------|
@@ -214,11 +214,11 @@ Claude Code includes **66+ built-in tools**, organized into 6 categories by func
 | | ListPeersTool | List peer Agents |
 | **User Interaction** | AskUserQuestionTool | Ask users questions |
 | | TodoWriteTool | Manage to-do lists |
+| | BriefTool (model-facing name `SendUserMessage`) | Send a message to the user (the user-visible reply channel in assistant/background mode; supports markdown and attachments) |
 | **System** | EnterPlanModeTool | Enter planning mode |
 | | ExitPlanModeTool | Exit planning mode |
 | | EnterWorktreeTool | Enter Git Worktree isolation |
 | | ExitWorktreeTool | Exit Worktree |
-| | BriefTool | Generate brief summaries |
 | | ConfigTool | Configuration management |
 | **Tool Extensions** | SkillTool | Load and execute skills |
 | | ToolSearchTool | Search and load deferred tools |
@@ -249,7 +249,7 @@ flowchart TD
 
     Perm --> Exec[5. Tool Execution<br/>tool.call<br/>Streaming progress events<br/>Timeout/sandbox]
     Exec --> Result[6. Result Processing<br/>mapToolResult<br/>Large results persisted to disk]
-    Result --> PostHook[7. Post-Tool Hook<br/>postToolUse on success<br/>postToolFail on failure]
+    Result --> PostHook[7. Post-Tool Hook<br/>PostToolUse on success<br/>PostToolUseFailure on failure]
     PostHook --> Emit[8. Message Emission<br/>tool_result block]
 ```
 
@@ -284,7 +284,7 @@ The two-phase separation design ensures that: the Schema layer handles structura
 
 The Pre-Tool Hook and Bash classifier **launch simultaneously**, rather than waiting serially. Both operations may take tens to hundreds of milliseconds each, and parallelization can significantly reduce the total latency of permission checks.
 
-- **Pre-Tool Hook**: Executes external scripts configured by the user in `hooks.preToolUse`, which can return `allow`, `deny`, or no decision
+- **Pre-Tool Hook**: Executes external scripts configured by the user under the `PreToolUse` event, which can return `allow`, `deny`, or no decision
 - **Bash classifier**: Speculatively classifies BashTool calls for safety (determining if the command is read-only), with results cached for use in permission checks
 
 **Stage 4 - Permission Check**
@@ -304,19 +304,20 @@ Each tool can implement its own permission logic. Most tools use the default imp
 
 **4c. Rule Matching**
 
-The system collects permission rules from **7 sources**, arranged by priority:
+The system collects permission rules from **8 sources**:
 
 | Source | Description | Example |
 |--------|-------------|---------|
-| `session` | Temporary authorization from the user in the current session | Generated when user clicks "Allow once" |
-| `cliArg` | Rules specified via command-line arguments | `--allowedTools 'Bash(git *)'` |
-| `localSettings` | `.claude/settings.local.json` | Personal settings not committed to git |
 | `userSettings` | `~/.claude/settings.json` | User-level global settings |
 | `projectSettings` | `.claude/settings.json` | Project-level shared settings |
-| `policySettings` | Organization policy configuration | Mandatory rules distributed by enterprise admins |
-| `flagSettings` | Feature flag dynamic configuration | Server-side remote configuration |
+| `localSettings` | `.claude/settings.local.json` | Personal settings not committed to git |
+| `flagSettings` | Settings passed via the `--settings` flag | A settings file explicitly named on the command line |
+| `policySettings` | Organization policy (`managed-settings.json` or remote settings from the API) | Mandatory rules distributed by enterprise admins |
+| `cliArg` | Rules specified via command-line arguments | `--allowedTools 'Bash(git *)'` |
+| `command` | Rules carried by slash commands / command frontmatter | `allowedTools` declared in a command definition |
+| `session` | Temporary authorization from the user in the current session | Generated when user clicks "Allow once" |
 
-Each rule has three behaviors: `allow` (auto-approve), `deny` (auto-reject), `ask` (require interactive confirmation). A rule's `ruleContent` supports three matching modes:
+Each rule has three behaviors: `allow` (auto-approve), `deny` (auto-reject), `ask` (require interactive confirmation). These sources are not a simple linear priority ordering—what actually decides the outcome is the **behavior precedence `deny > ask > allow`**: a `deny` from any source takes effect first, and a `deny` in the enterprise `policySettings` cannot be overridden by a `session` grant. Among the settings-class sources, later ones override earlier ones (`userSettings` < `projectSettings` < `localSettings` < `flagSettings` < `policySettings`, so enterprise policy is strongest). A rule's `ruleContent` supports three matching modes:
 - **Exact match**: `Bash(npm install)` matches only the exact same command
 - **Prefix match**: `Bash(git commit:*)` matches all commands starting with `git commit`
 - **Wildcard match**: `Bash(git *)` matches all commands starting with `git `
@@ -351,10 +352,10 @@ The Post-Tool Hook is split into two independent events:
 
 | Hook Event | Trigger | Script Receives |
 |------------|---------|-----------------|
-| `postToolUse` | Triggered when tool execution succeeds | Tool name, input, and output |
-| `postToolFail` | Triggered when tool execution fails | Tool name, input, and error details |
+| `PostToolUse` | Triggered when tool execution succeeds | Tool name, input, and output |
+| `PostToolUseFailure` | Triggered when tool execution fails | Tool name, input, and error details |
 
-Both are independent Hook events, and users can configure different handling logic for each. For example, you could send a notification in `postToolUse` for BashTool's `git push` command, and log failures in `postToolFail`.
+Both are independent Hook events, and users can configure different handling logic for each. For example, you could send a notification in `PostToolUse` for BashTool's `git push` command, and log failures in `PostToolUseFailure`. (Event names are case-sensitive and matched literally in the settings config—they must be spelled `PostToolUse` / `PostToolUseFailure`; lowercase spellings will never fire.)
 
 ### Error Handling and Propagation
 
@@ -384,24 +385,33 @@ This design ensures that telemetry data is analyzable under any build mode, whil
 
 Concurrent tool execution follows strict rules:
 
-- **Read-only tools can run in parallel**: Tools with `isReadOnly(input) === true` (such as FileReadTool, GrepTool, GlobTool) can execute simultaneously
-- **Write tools run serially**: Tools with `isReadOnly(input) === false` (such as FileEditTool, BashTool write commands) must execute serially
-- **Concurrency safety flag**: `isConcurrencySafe(input)` provides more fine-grained control
+- **Concurrency-safe tools can run in parallel**: Tools with `isConcurrencySafe(input) === true` (such as FileReadTool, GrepTool, GlobTool) can execute simultaneously
+- **Non-concurrency-safe tools run serially**: Tools with `isConcurrencySafe(input) === false` (such as FileEditTool, BashTool write commands) must execute exclusively
+- **`isReadOnly` is only an intuition**: read-only usually implies concurrency-safe, but they are two separate methods on the interface—what actually gates concurrent scheduling is `isConcurrencySafe`, not `isReadOnly`
 
-Tool orchestration is managed by the `runTools()` function in `src/services/tools/toolOrchestration.ts`:
+Tool orchestration is managed by the `runTools()` function in `src/services/tools/toolOrchestration.ts`. It does **not** filter out all read-only tools at once and run them in a single `Promise.all`; instead it groups **consecutive** concurrency-safe calls into a batch that runs in parallel, in **output order**, and starts a new serial batch whenever it hits a non-concurrency-safe call:
 
 ```typescript
-// Simplified concurrency logic
-const readOnlyTools = toolUses.filter(t => findTool(t).isReadOnly(t.input))
-const statefulTools = toolUses.filter(t => !findTool(t).isReadOnly(t.input))
-
-// Read-only tools execute in parallel
-await Promise.all(readOnlyTools.map(t => executeTool(t)))
-
-// Stateful tools execute serially
-for (const tool of statefulTools) {
-  await executeTool(tool)
+// The heart of partitionToolCalls: batch by isConcurrencySafe, preserving order
+function partitionToolCalls(toolUses) {
+  return toolUses.reduce((batches, toolUse) => {
+    const tool = findToolByName(tools, toolUse.name)
+    const parsed = tool?.inputSchema.safeParse(toolUse.input)
+    const safe = parsed?.success
+      ? Boolean(tool.isConcurrencySafe(parsed.data))  // the test is concurrency-safety, not read-only
+      : false
+    // Consecutive concurrency-safe calls merge into the same batch; otherwise start a new one
+    if (safe && batches.at(-1)?.isConcurrencySafe) {
+      batches.at(-1).blocks.push(toolUse)
+    } else {
+      batches.push({ isConcurrencySafe: safe, blocks: [toolUse] })
+    }
+    return batches
+  }, [])
 }
+
+// Each concurrency-safe batch runs in parallel (runToolsConcurrently),
+// throttled by getMaxToolUseConcurrency() (default 10); non-safe batches run serially.
 ```
 
 ### StreamingToolExecutor: Streaming Parallel Execution
@@ -467,7 +477,7 @@ Inside StreamingToolExecutor, tools are divided into two execution categories:
 
 The executor's scheduling logic is based on a simple rule: **when no tools are currently executing, any tool can start; when tools are executing, a new tool can only start under the condition that "both itself and all currently executing tools are concurrency-safe"**. Once a non-concurrency-safe tool is encountered, queue processing pauses, waiting for all currently executing tools to complete before the non-concurrency-safe tool runs exclusively.
 
-Even in parallel execution scenarios, there is a hard upper limit on concurrency: `MAX_TOOL_USE_CONCURRENCY = 10` (configurable via the `CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY` environment variable). This prevents file handle exhaustion or I/O contention when the model issues 20 FileReadTool calls at once.
+The hard concurrency cap lives on the **static orchestration path**: `runToolsConcurrently()` in `toolOrchestration.ts` throttles each concurrent batch with `getMaxToolUseConcurrency()` (default 10, overridable via the `CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY` environment variable), preventing file handle exhaustion or I/O contention when the model issues 20 FileReadTool calls at once. The `StreamingToolExecutor` itself has **no numeric cap**—it gates purely on concurrency-safety (`canExecuteTool()`) and can launch arbitrarily many concurrency-safe tools at once (there is no constant named `MAX_TOOL_USE_CONCURRENCY`).
 
 Additionally, StreamingToolExecutor implements a **sibling cancellation mechanism** (`siblingAbortController`): when a Bash tool execution errors out, it cancels other tools executing in the same batch. This avoids the problem of "the first command fails but subsequent commands continue executing." Errors from non-Bash tools (such as FileReadTool, WebFetchTool) do not cascade—their failures are typically independent and don't affect sibling tools.
 
@@ -491,7 +501,7 @@ BashTool's input Schema:
 
 ### 4.6.1 Security Validation (bashSecurity.ts)
 
-Security validation is BashTool's first line of defense, executed before permission checks. `bashSecurity.ts` is approximately 800 lines of code, implementing **23 named security checks** (mapped to numeric IDs via the `BASH_SECURITY_CHECK_IDS` constant, avoiding recording mutable strings in telemetry logs):
+Security validation is BashTool's first line of defense, executed before permission checks. `bashSecurity.ts` is approximately 2600 lines of code, implementing **23 named security checks** (mapped to numeric IDs via the `BASH_SECURITY_CHECK_IDS` constant, avoiding recording mutable strings in telemetry logs):
 
 ```typescript
 const BASH_SECURITY_CHECK_IDS = {
@@ -522,7 +532,7 @@ const BASH_SECURITY_CHECK_IDS = {
 }
 ```
 
-**Command substitution blocking** is the most critical defense. The `COMMAND_SUBSTITUTION_PATTERNS` array contains 11 patterns, covering all known forms of command substitution:
+**Command substitution blocking** is the most critical defense. The `COMMAND_SUBSTITUTION_PATTERNS` array contains 12 patterns, covering all known forms of command substitution:
 
 ```typescript
 const COMMAND_SUBSTITUTION_PATTERNS = [
@@ -583,7 +593,7 @@ When exceeding 50 sub-commands, the system abandons per-command analysis and dir
 
 **Step 3: Safe Environment Variable Stripping**
 
-Before matching permission rules, safe environment variable assignments preceding the command are stripped. For example, `NODE_ENV=prod` in `NODE_ENV=prod npm run build` is removed, leaving `npm run build` for rule matching. The `SAFE_ENV_VARS` set contains 26 known-safe variables (Go series like `GOEXPERIMENT`/`GOOS`/`GOARCH`, Rust series like `RUST_BACKTRACE`/`RUST_LOG`, Node's `NODE_ENV`, locale variables like `LANG`/`LC_ALL`, etc.).
+Before matching permission rules, safe environment variable assignments preceding the command are stripped. For example, `NODE_ENV=prod` in `NODE_ENV=prod npm run build` is removed, leaving `npm run build` for rule matching. The `SAFE_ENV_VARS` set contains 32 known-safe variables (Go series like `GOEXPERIMENT`/`GOOS`/`GOARCH`, Rust series like `RUST_BACKTRACE`/`RUST_LOG`, Node's `NODE_ENV`, locale variables like `LANG`/`LC_ALL`, etc.); internal builds add an `ANT_ONLY_SAFE_ENV_VARS` extension set (active when `USER_TYPE === 'ant'`).
 
 Why distinguish between safe and unsafe environment variables? Because `MY_VAR=val command` where `MY_VAR` could affect command behavior (e.g., `LD_PRELOAD=evil.so curl`) cannot be unconditionally stripped. However, `NODE_ENV=prod` is harmless, and if not stripped, a user-configured `Bash(npm run:*)` rule would fail to match `NODE_ENV=prod npm run build`.
 
@@ -645,7 +655,7 @@ When a sed command includes file arguments (e.g., `sed -i 's/foo/bar/' file.txt`
 
 ### 4.6.5 Path Validation and Destructive Command Warnings
 
-**Path validation** (`pathValidation.ts`) extracts path arguments from commands involving file paths (`cd`, `rm`, `mv`, `cp`, `cat`, `grep`, etc. — approximately 24 command categories) and validates whether they are within the allowed working directory scope. Different commands have different path extraction rules — `cd` concatenates all arguments into one path, `find` collects paths before the first non-glob flag, `grep`/`rg` collect file paths after parsing the pattern argument. All commands respect the POSIX `--` separator (all arguments after it are positional arguments, not flags).
+**Path validation** (`pathValidation.ts`) extracts path arguments from commands involving file paths (`cd`, `rm`, `mv`, `cp`, `cat`, `grep`, etc. — approximately 36 command categories, i.e. the keys of `PATH_EXTRACTORS`) and validates whether they are within the allowed working directory scope. Different commands have different path extraction rules — `cd` concatenates all arguments into one path, `find` collects paths before the first non-glob flag, `grep`/`rg` collect file paths after parsing the pattern argument. All commands respect the POSIX `--` separator (all arguments after it are positional arguments, not flags).
 
 For dangerous deletion paths (`rm -rf /`, `rm -rf ~`), regardless of whatever saved rules the user has, explicit approval is always required — this is a non-overridable security hard limit.
 
@@ -752,7 +762,7 @@ flowchart TD
 
 When tool output exceeds `maxResultSizeChars`, Claude Code does not inject the entire content into the conversation context:
 
-1. Saves the complete result to the `~/claude-code/tool-results/` directory
+1. Saves the complete result to `~/.claude/projects/<project-dir>/<sessionId>/tool-results/` (isolated per project and per session)
 2. The model receives: file path preview + truncation indicator
 3. The model can read the full content on demand via FileReadTool
 
@@ -762,16 +772,18 @@ This avoids context bloat while maintaining accessibility of the complete data.
 
 Different tools have `maxResultSizeChars` set according to their output characteristics:
 
-| Tool type | Typical threshold range | Notes |
+| Tool type | `maxResultSizeChars` | Notes |
 |-----------|----------------------|-------|
-| BashTool | ~100K characters | Shell command output can be very large (e.g., `find /`) |
-| GrepTool | ~100K characters | Broad searches may match thousands of lines |
-| FileReadTool | ~200K characters | Large files read with on-demand pagination |
-| WebFetchTool | ~100K characters | Web page content length is unpredictable |
+| BashTool | 30,000 | Shell command output can be very large (e.g., `find /`) |
+| GrepTool | 20,000 | Broad searches may match thousands of lines |
+| WebFetchTool | 100,000 | Web page content length is unpredictable |
+| FileReadTool | `Infinity` | Output is already self-limited by `maxTokens` pagination, so it explicitly opts out of persistence (persisting only to have the model `Read` it back would be circular) |
+
+Note: a tool's declared `maxResultSizeChars` is further clamped by `getPersistenceThreshold()` taking the `min` with `DEFAULT_MAX_RESULT_SIZE_CHARS = 50,000`—so a declared value above 50,000 never takes effect (this is the 50,000 ceiling mentioned in the sidebar below).
 
 ### Large Result Handling for MCP Tools
 
-MCP tool output has additional processing: binary blobs (such as images, PDFs) exceeding **25KB** are automatically saved to the `.claude/mcp-outputs/` directory. The model receives a file path reference rather than inline base64-encoded data. This is particularly important for handling screenshots, documents, and other binary content returned by MCP servers.
+MCP tool output has additional processing: when output exceeds **25,000 tokens** (`DEFAULT_MAX_MCP_OUTPUT_TOKENS`, the default, overridable via the `MAX_MCP_OUTPUT_TOKENS` environment variable), `truncateMcpContent()` **truncates it in place** and appends a truncation notice (`[OUTPUT TRUNCATED - exceeded N token limit]`); any image blocks are first compressed by `compressImageBlock()` to fit into the remaining token budget rather than being dropped wholesale (`utils/mcpValidation.ts`). Large text results, meanwhile, go through the same general tool-results persistence mechanism as other tools (see §4.8)—there is no dedicated "spill a binary blob to disk and return its path" channel. (Note this is 25,000 **tokens**, not 25KB.)
 
 The overall design follows an "on-demand read pattern": the model first sees a summary and location information of the result, and only actively fetches detailed data via FileReadTool when needed. This transforms a one-time context explosion into controlled incremental reading.
 
@@ -797,18 +809,22 @@ MCP (Model Context Protocol) tools are seamlessly integrated into Claude Code's 
 | ReadMcpResourceTool | Read MCP resource content |
 | createMcpAuthTool() | OAuth authentication handling |
 
-### 7 Transport Mechanisms
+### Transport Mechanisms and Server Config Types
+
+The transport layer is defined by `TransportSchema`, with **6 transport mechanisms** (`services/mcp/types.ts`):
 
 ```typescript
-type McpTransport =
-  | 'stdio'          // Standard input/output (child process MCP server)
-  | 'sse'            // Server-Sent Events (HTTP streaming)
-  | 'sse-ide'        // SSE variant (IDE extension)
-  | 'http'           // HTTP transport (StreamableHTTPClientTransport)
-  | 'ws'             // WebSocket (bidirectional real-time)
-  | 'sdk'            // SDK native transport (in-process, SdkControlTransport)
-  | 'claudeai-proxy' // Claude.ai proxy server
+// TransportSchema = z.enum([...])
+type Transport =
+  | 'stdio'    // Standard input/output (child process MCP server)
+  | 'sse'      // Server-Sent Events (HTTP streaming)
+  | 'sse-ide'  // SSE variant (IDE extension)
+  | 'http'     // HTTP transport (StreamableHTTPClientTransport)
+  | 'ws'       // WebSocket (bidirectional real-time)
+  | 'sdk'      // SDK native transport (in-process, SdkControlTransport)
 ```
+
+The server config (`McpServerConfigSchema`), however, is a discriminated union of **8 config types**—beyond the 6 transports above, it adds the IDE-facing `ws-ide` (`McpWebSocketIDEServerConfig`) and the Claude.ai proxy `claudeai-proxy`. In other words: 6 transport enum values, 8 server config types—they are not the same list.
 
 ### Connection State Machine
 
@@ -849,15 +865,15 @@ MCP integration supports three-stage OAuth:
 
 MCP server configuration supports 7 scopes: local / user / project / dynamic / enterprise / claudeai / managed.
 
-MCP tools are merged with built-in tools during the `assembleToolPool()` stage, undergoing deduplication before unified registration. Large outputs (binary blobs > 25KB) are automatically saved to `.claude/mcp-outputs/`.
+MCP tools are merged with built-in tools during the `assembleToolPool()` stage, undergoing deduplication before unified registration. When output exceeds 25,000 tokens (the default), it is truncated in place with a truncation notice appended, and image blocks are first compressed to fit the remaining budget (`utils/mcpValidation.ts`); large text results go through the tool-results persistence mechanism like other tools.
 
 > **Design Decision: Why is MCP a Good Fit for the Agent Ecosystem?**
 >
-> The core design philosophy of MCP is **protocol, not SDK** — any language, any process can implement an MCP server, as long as it follows the JSON-RPC protocol. This forms a natural complement with Claude Code's tool system: built-in tools provide "deep integration" (direct access to in-process state), while MCP tools provide "breadth extension" (connecting external capabilities). The existence of 7 transport mechanisms reflects the diversity of the real world — local tools use stdio (zero network overhead), remote services use HTTP/WebSocket (supporting authentication and reconnection), and IDE plugins use SSE-IDE (adapted to VS Code's process model). The 7-tier configuration scoping (from local to enterprise) ensures that management needs across different organizational scales can all be met.
+> The core design philosophy of MCP is **protocol, not SDK** — any language, any process can implement an MCP server, as long as it follows the JSON-RPC protocol. This forms a natural complement with Claude Code's tool system: built-in tools provide "deep integration" (direct access to in-process state), while MCP tools provide "breadth extension" (connecting external capabilities). The existence of 6 transport mechanisms (with 8 server config types) reflects the diversity of the real world — local tools use stdio (zero network overhead), remote services use HTTP/WebSocket (supporting authentication and reconnection), and IDE plugins use SSE-IDE (adapted to VS Code's process model). The 7-tier configuration scoping (from local to enterprise) ensures that management needs across different organizational scales can all be met.
 
 ## 4.10 Tool Search and Lazy Loading
 
-Not all 66+ tools are sent to the model with every API call. `ToolSearchTool` supports **lazy loading**:
+Not all 60+ tools are sent to the model with every API call. `ToolSearchTool` supports **lazy loading**:
 
 - Tools with `shouldDefer: true` do not appear in the initial tool list
 - The model can call `ToolSearch` to search for and dynamically load needed tools
@@ -889,7 +905,7 @@ The core value of lazy loading is not just reducing prompt size, but more import
 
 **1. The Power of a Unified Interface**
 
-All tools — whether built-in tools that directly access in-process state, MCP tools connected via JSON-RPC, or REPL tools running in separate VMs — share the same `Tool<Input, Output, P>` generic interface. This means the execution pipeline (input validation → permission check → Hook → execution → result processing) is exactly the same for all tools. Adding a new MCP server requires no changes to any execution logic — just implement `call()` and provide `inputSchema`. This uniformity is the key to how Claude Code scales from 20 tools to 66+ tools without increasing system complexity.
+All tools — whether built-in tools that directly access in-process state, MCP tools connected via JSON-RPC, or REPL tools running in separate VMs — share the same `Tool<Input, Output, P>` generic interface. This means the execution pipeline (input validation → permission check → Hook → execution → result processing) is exactly the same for all tools. Adding a new MCP server requires no changes to any execution logic — just implement `call()` and provide `inputSchema`. This uniformity is the key to how Claude Code scales from 20 tools to 60+ tools without increasing system complexity.
 
 **2. Security Semantics Encoded as Types**
 
@@ -976,4 +992,4 @@ Each tool's `UI.tsx` follows the same pattern: import the tool's type definition
 
 ---
 
-> **Hands-on Practice**: In [claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch)'s `src/tools.ts`, ~325 lines of code implement 7 core tools. Compared to this chapter's 66+ tool system, this is the best starting point for understanding the "minimum viable tool set." See the tutorial [Chapter 2: Tool System](https://github.com/Windy3f3f3f3f/claude-code-from-scratch/blob/main/docs/02-tools.md).
+> **Hands-on Practice**: In [claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch)'s `src/tools.ts`, ~325 lines of code implement 7 core tools. Compared to this chapter's 60+ tool system, this is the best starting point for understanding the "minimum viable tool set." See the tutorial [Chapter 2: Tool System](https://github.com/Windy3f3f3f3f/claude-code-from-scratch/blob/main/docs/02-tools.md).

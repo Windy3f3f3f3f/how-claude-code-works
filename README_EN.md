@@ -61,7 +61,7 @@ Most AI agent frameworks are "demo-grade" — they work for one scenario and cal
 
 - Conversations grow to tens of thousands of tokens — what happens when the context window runs out?
 - A user asks the AI to run `rm -rf /` — how do you stop it?
-- 66 built-in tools coexist — how do you coordinate them?
+- dozens of built-in tools coexist — how do you coordinate them?
 - Network drops, API overloads, token limits hit — how do you avoid crashing?
 - How do you make it *feel* fast when model inference alone takes tens of seconds?
 
@@ -83,7 +83,7 @@ It does three clever things:
 
 Most programs show errors to users. Claude Code's strategy: **if an error is recoverable, the user never sees it.**
 
-When a conversation exceeds the context window, it doesn't pop up an error dialog — it silently compresses the context and retries. Hit the output token limit? It automatically escalates from 4K to 64K and tries again. The agent loop has 7 different "continue" strategies, each handling a different failure recovery path.
+When a conversation exceeds the context window, it doesn't pop up an error dialog — it silently compresses the context and retries. Hit the output token limit? It automatically escalates from 8K to 64K and tries again. The agent loop has 7 different "continue" strategies, each handling a different failure recovery path.
 
 This is why you rarely see errors in Claude Code — not because there aren't any, but because most are handled internally.
 
@@ -110,7 +110,7 @@ Claude Code runs commands directly on your machine — security has to be rock-s
 
 If any single layer blocks the action, it doesn't execute. Defense in depth.
 
-### How do 66 tools work together?
+### How do dozens of tools work together?
 
 All tools — file reading, file writing, shell commands, search, even third-party MCP tools — follow **the same interface specification**. This means:
 
@@ -140,7 +140,7 @@ To prevent conflicts from multiple agents editing the same files, the system use
 | 1 | [Overview](./en/docs/01-overview.md) | What problem Claude Code solves, the thinking behind tech choices, overall architecture |
 | 2 | [Agent Loop](./en/docs/02-agent-loop.md) | How the agent "think-act-observe" loop works, how it handles interruption and recovery |
 | 3 | [Context Engineering](./en/docs/03-context-engineering.md) | How to fit the most useful information into a limited context window, full compression strategy details |
-| 4 | [Tool System](./en/docs/04-tool-system.md) | How 66 tools are registered, dispatched, and concurrency-controlled; how to integrate third-party tools |
+| 4 | [Tool System](./en/docs/04-tool-system.md) | How dozens of tools are registered, dispatched, and concurrency-controlled; how to integrate third-party tools |
 | 5 | [Skills System](./en/docs/09-skills-system.md) | 6 skill sources, lazy loading, inline/fork execution, permission model, post-compaction preservation |
 | 6 | [Memory System](./en/docs/08-memory-system.md) | 4 memory types, Sonnet semantic recall, background extraction agent, drift defense |
 | 7 | [Hooks & Extensibility](./en/docs/06-hooks-extensibility.md) | 23 hook events, how to customize Claude Code's behavior without modifying source code |
@@ -170,7 +170,7 @@ To prevent conflicts from multiple agents editing the same files, the system use
 |--------|-------|
 | Source lines | 512,000+ |
 | TypeScript files | 1,884 |
-| Built-in tools | 66+ |
+| Built-in tools | ~55 (tools.ts registry, incl. feature-gated) |
 | Compression levels | 4 |
 | Security layers | 5 |
 
@@ -183,7 +183,7 @@ To prevent conflicts from multiple agents editing the same files, the system use
 → Read in order: [Agent Loop](./en/docs/02-agent-loop.md) → [Context Engineering](./en/docs/03-context-engineering.md) → [Tool System](./en/docs/04-tool-system.md)
 
 **Want to build your own AI agent?**
-→ Start with [Minimal Components](./en/docs/13-minimal-components.md), then follow **[claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch)** — 8-chapter hands-on tutorial, 1300 lines of code, every step mapped to the real source
+→ Start with [Minimal Components](./en/docs/13-minimal-components.md), then follow **[claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch)** — 13-chapter hands-on tutorial, ~4300 lines of code, every step mapped to the real source
 
 **Want to customize Claude Code?**
 → Read [Hooks & Extensibility](./en/docs/06-hooks-extensibility.md) + [Memory System](./en/docs/08-memory-system.md) + [Skills System](./en/docs/09-skills-system.md)

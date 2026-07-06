@@ -199,7 +199,7 @@ Phase 5: Call ExitPlanMode
   → Submit the plan for user approval
 ```
 
-The number of agents per phase is dynamic, depending on the user's subscription tier (`src/utils/planModeV2.ts:5-29`):
+**The number of Phase 2 Plan Agents** is dynamic, depending on the user's subscription tier (`src/utils/planModeV2.ts:5-29`); by contrast, **the number of Phase 1 Explore Agents is fixed at a maximum of 3**, independent of subscription (`getPlanModeV2ExploreAgentCount()` unconditionally returns 3, overridable only via the `CLAUDE_CODE_PLAN_V2_EXPLORE_AGENT_COUNT` env var):
 
 ```typescript
 export function getPlanModeV2AgentCount(): number {
@@ -311,7 +311,7 @@ When a user resumes a previous session, the corresponding plan file needs to be 
 5. plan_file_reference    → Extracted from attachments created by auto-compact
 ```
 
-Why so many recovery strategies? Because **remote sessions (CCR) don't persist files**. Local users' plan files sit safely in `~/.claude/plans/`, but remote users' pods can be reclaimed at any time. So Claude Code calls `persistFileSnapshotIfRemote()` during every `normalizeToolInput()`, writing the plan content as a `file_snapshot` system message into the transcript — the only reliable persistence channel.
+Why so many recovery strategies? Because **remote sessions (CCR) don't persist files**. Local users' plan files sit safely in `~/.claude/plans/`, but remote users' pods can be reclaimed at any time. So Claude Code calls `persistFileSnapshotIfRemote()` only when `normalizeToolInput()` handles the `ExitPlanMode` tool specifically (the `EXIT_PLAN_MODE_V2_TOOL_NAME` branch of its `switch`, `src/utils/api.ts:578`), and when `ExitPlanMode.call()` writes the user-edited plan (`ExitPlanModeV2Tool.ts:260`) — not on every `normalizeToolInput()`. It writes the plan content as a `file_snapshot` system message into the transcript — the only reliable persistence channel.
 
 Forking a session (`copyPlanForFork()`, `src/utils/plans.ts:239-264`) is simpler but has one critical detail: **generate a new slug**. If the original slug were reused, the original and forked sessions would write to the same file — causing mutual overwrites.
 
@@ -531,11 +531,11 @@ The injected `plan` and `planFilePath` fields are consumed by hooks and SDK cons
 
 1. **Voluntarily trading power for trust**: Plan Mode is the only mechanism in all of Claude Code where the model "voluntarily requests to lower its own permissions." This design inverts the traditional "I need permissions" pattern into "I voluntarily give up permissions to earn your trust" — when the model judges a task is complex, it chooses to bind its own hands, using only its eyes, until you say "go ahead."
 
-2. **Symmetric state transitions**: Enter with `prePlanMode = currentMode`, exit with `currentMode = prePlanMode`. This symmetry guarantees Plan Mode is a "pure function" — it produces no side effects, and the system state after exit is identical to before entry (except for the addition of a plan file).
+2. **Symmetric state transitions**: Enter with `prePlanMode = currentMode`, exit with `currentMode = prePlanMode`. This symmetry lets Plan Mode cleanly restore the pre-entry mode in most cases. It is not strictly a "pure function," though — exiting sets a few one-shot exit flags (`setHasExitedPlanMode` / `setNeedsPlanModeExitAttachment`, etc.), and when the circuit breaker trips, `auto` is downgraded to `default` (see §9.6.3), so the mode after exit is not always identical to before entry.
 
 3. **Progressive prompt injection**: The full → sparse → full throttling strategy strikes a balance between token cost and model memory. Full instructions are ~4,700 characters (~1,200 tokens), while sparse reminders are only ~300 characters (~75 tokens). For an average 15-turn plan session, the throttling strategy saves roughly 10,000 tokens.
 
-4. **Experiment-driven iteration**: Phase 4's four variants weren't designed by guesswork — they're based on baseline data from 26.3M sessions, using rigorous A/B testing to validate whether "shorter plans lead to better user satisfaction." This reflects the engineering team's approach of optimizing for **user satisfaction (rejection rate) rather than technical metrics (plan length)**.
+4. **Experiment-driven iteration**: Phase 4's four variants weren't designed by guesswork — they're based on a baseline sample of N=26.3M (14 days, counted by plan-exit), using rigorous A/B testing to validate whether "shorter plans lead to better user satisfaction." This reflects the engineering team's approach of optimizing for **user satisfaction (rejection rate) rather than technical metrics (plan length)**.
 
 5. **Fault tolerance is everywhere**: From the 5-layer plan recovery strategy, to circuit breaker defense, to re-entry guidance, every step of Plan Mode asks "what if something goes wrong?" This isn't over-engineering — in an AI system, the model's behavior is inherently unpredictable, and defensive programming is the only rational strategy.
 

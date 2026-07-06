@@ -13,7 +13,7 @@ Claude Code provides two file editing tools, each suited for different scenarios
 | **FileEditTool** | search-and-replace | Modifying specific parts of existing files | Low |
 | **FileWriteTool** | Full file overwrite | Creating new files or complete rewrites | High |
 
-The system prompt explicitly guides the model: **prefer FileEditTool**. Only use FileWriteTool when creating entirely new files or when a complete rewrite is needed.
+The system prompt and the tool descriptions together guide the model to **prefer FileEditTool** — the tool description in particular hard-codes "only use Write to create new files or for complete rewrites."
 
 FileEditTool is the default choice because it solves the thorniest problem of LLM code editing at an engineering level: how do you let a model that may hallucinate safely modify real code? The following sections dive deep into FileEditTool's design to understand the "why" behind every engineering decision.
 
@@ -298,7 +298,7 @@ FileWriteTool is positioned for creating new files or complete rewrites:
 }
 ```
 
-Usage guidelines from the system prompt:
+Usage guidelines from FileWriteTool's tool description (shipped to the model alongside the tools array, not the system prompt):
 - For existing files, **must first read content using the Read tool**, then edit
 - Prefer using the Edit tool for modifying existing files — it only sends the diff
 - Only use Write when creating new files or for complete rewrites
@@ -394,7 +394,7 @@ if (size > MAX_EDIT_FILE_SIZE) {
 
 ## 10.4 Read-Before-Edit Requirement
 
-The system prompt mandates: **you must read a file before editing it**.
+FileEditTool's **tool description** (shipped to the model alongside the tools array, not the system prompt) mandates that **you must read a file before editing it**:
 
 ```
 You MUST use your Read tool at least once in the conversation
@@ -402,7 +402,7 @@ before editing. This tool will error if you attempt an edit
 without reading the file.
 ```
 
-This is not merely a prompt-level constraint — FileEditTool's implementation actually checks the `readFileState` cache, and returns an error (error code 6) if the file hasn't been read.
+This is not merely a tool-description-level constraint — FileEditTool's implementation actually checks the `readFileState` cache, and returns an error (error code 6) if the file hasn't been read. (The high-level "read it first" intent does also live in the real system prompt at `constants/prompts.ts` as a softer "read it first"; the tool description turns it into a hard-erroring constraint.)
 
 This design ensures the model:
 1. Understands the file's current state
@@ -415,7 +415,7 @@ Consider a real usage scenario to understand the necessity of the read prerequis
 
 **Scenario 1: Stale memory**. The user asks Claude in the 3rd conversation turn to modify the `formatDate()` function in `utils.ts`. Claude read this file in the 1st turn and knows the function signature is `function formatDate(date: Date)`. But in the 2nd turn, the user manually changed the signature in the IDE to `function formatDate(date: Date, locale?: string)`. Without the read prerequisite constraint, Claude would generate `old_string: "function formatDate(date: Date)"` based on the old version in the conversation history — this string no longer exists in the current file (because of the added `locale` parameter), and the edit would fail. Even worse, if Claude used FileWriteTool for a full file rewrite, the old version's content would directly overwrite the user's manual modification.
 
-**Scenario 2: The `isPartialView` trap**. Some files have additional content injected when Read (e.g., comments in HTML files are stripped, `MEMORY.md` is truncated). These files' `readFileState` is marked as `isPartialView: true`. If editing based on a partial view were allowed, the content the model sees wouldn't match the file's actual content, and `old_string` would very likely fail to match or match at the wrong location.
+**Scenario 2: The `isPartialView` trap**. Memory files that are auto-injected into context, such as `CLAUDE.md` / `MEMORY.md`, may have content injected to the model that differs from disk (their embedded HTML comments and frontmatter are stripped, `MEMORY.md` is truncated). These files' `readFileState` entry is marked `isPartialView: true` — and in that case the `content` field holds the raw disk bytes, not the version the model actually saw. If editing based on a partial view were allowed, the content the model sees wouldn't match the raw disk content held in the cache, and `old_string` would very likely fail to match or match at the wrong location, which is why both Edit and Write require a genuine Read of such entries first.
 
 The implementation of the read prerequisite constraint is also noteworthy — it distinguishes between "never read" and "read but partial view", rejecting edits for both:
 
@@ -475,7 +475,7 @@ When coordinated modifications across multiple files are needed (such as renamin
 
 ### Serial Editing
 
-Since FileEditTool's `isReadOnly()` returns `false`, multiple file edit operations are **executed serially**. This ensures:
+Since FileEditTool does not override `isConcurrencySafe()` (`buildTool` defaults it to `false`), the scheduler (`partitionToolCalls` in `toolOrchestration.ts`) places it in a serial batch, so multiple file edit operations are **executed serially** (`isReadOnly` is only used for permission-UI display, memory extraction, and similar — it does not govern concurrency). This ensures:
 - No race conditions
 - Each edit is based on the file's latest state
 - If an intermediate edit fails, subsequent edits won't continue on an erroneous basis
@@ -530,7 +530,7 @@ For large-scale refactoring, AgentTool supports Git Worktree isolation mode. Sub
 
 ## 10.6 Indentation Preservation
 
-The system prompt provides explicit guidance about indentation:
+FileEditTool's **tool description** provides explicit guidance about indentation (this specific wording lives only in the tool description, not the system prompt):
 
 ```
 When editing text from Read tool output, ensure you preserve
@@ -622,7 +622,7 @@ async call(input, context) {
   // 2. Ensure parent directory exists
   await fs.mkdir(dirname(absoluteFilePath))
 
-  // 3. File history backup (deduplicated by content hash, v1 backup format)
+  // 3. File history backup (named by path hash, snapshot-level dedup, copyFile)
   await fileHistoryTrackEdit(updateFileHistoryState, absoluteFilePath, messageId)
 
   // === Critical section: avoid async operations to preserve atomicity ===
@@ -686,7 +686,7 @@ This means editing a UTF-16LE + CRLF file (legacy text files on Windows) is inte
 
 **LSP notifications**: After the edit is complete, the LSP server is immediately notified in two steps — `changeFile()` (corresponding to `textDocument/didChange`) informs that the content has been modified, and `saveFile()` (corresponding to `textDocument/didSave`) triggers diagnostic updates from language servers like the TypeScript server. These notifications are all fire-and-forget (`.catch()` only logs), and do not block the edit return. At the same time, previously delivered diagnostics for the file are cleared (`clearDeliveredDiagnosticsForFile`), ensuring new diagnostics are not filtered out by deduplication.
 
-**File history backup**: `fileHistoryTrackEdit()` captures the file's original content before writing, using content hash deduplication — if consecutive edits don't change the content, no duplicate backups are produced. The backup format is v1 (based on hard links or copies), stored in the `~/.claude/fileHistory/` directory. Since it's an idempotent operation, even if the subsequent staleness detection fails and the edit is aborted, the extra backup won't affect state consistency.
+**File history backup**: `fileHistoryTrackEdit()` backs up the file's original content before writing. The backup file is named by a hash of the **file path** (first 16 chars of `sha256(path)` + `@v1` — the hash is over the path, not the content), and deduplication is scoped to "back up each file only once within the current snapshot": a second `trackEdit` simply skips, so it won't overwrite the v1 backup with post-edit content (true content-level dedup happens later, in `makeSnapshot`, by reading the file back and comparing byte-for-byte — also not via a hash). The backup is made with `copyFile` (rather than reading a large file into the JS heap, which risks OOM), stored under `~/.claude/file-history/<sessionId>/`. Since it's an idempotent operation, even if the subsequent staleness detection fails and the edit is aborted, the extra backup won't affect state consistency. (The `keyed on content hash` comment in `FileEditTool.ts` is out of sync with the implementation — it's actually a path hash plus snapshot-level dedup.)
 
 **Skill directory discovery**: When the edited file is located within a skill directory, `discoverSkillDirsForPaths()` identifies that directory and triggers dynamic skill loading. Additionally, `activateConditionalSkillsForPaths()` activates conditional skills matching the path. This allows new skills to be immediately discovered and used when editing skill files.
 
@@ -773,7 +773,7 @@ The position of editing tools within the tool system:
 graph LR
     Model[Model Decision] --> Choice{Choose Tool}
     Choice -->|Modify existing file| Edit[FileEditTool<br/>search-and-replace<br/>isReadOnly=false<br/>isDestructive=false]
-    Choice -->|Create new file| Write[FileWriteTool<br/>Full file write<br/>isReadOnly=false<br/>isDestructive=true]
+    Choice -->|Create new file| Write[FileWriteTool<br/>Full file write<br/>isReadOnly=false<br/>isDestructive=false]
     Choice -->|Notebook| NB[NotebookEditTool<br/>Cell-level editing]
 
     Edit --> Perm[Permission Check]
@@ -783,6 +783,8 @@ graph LR
     Perm -->|acceptEdits mode| Auto[Auto Approve]
     Perm -->|default mode| Ask[User Confirmation]
 ```
+
+Note that neither FileEditTool nor FileWriteTool overrides `isReadOnly` / `isDestructive`; both take the `buildTool` defaults (`isReadOnly=false`, `isDestructive=false`). Their destructiveness difference lies in the "edit a slice vs. overwrite the whole file" strategy, not in these two boolean flags.
 
 In `acceptEdits` permission mode, editing tools are automatically approved without requiring user confirmation — this is a significant efficiency boost for high-trust projects.
 
@@ -795,7 +797,7 @@ In `acceptEdits` permission mode, editing tools are automatically approved witho
 5. **Git is the ultimate rollback mechanism**: No need to implement complex transactions or rollbacks at the editing tool level
 6. **Quote normalization is pragmatic**: Handles code copy-pasted from various real-world sources, rather than assuming all files are perfectly formatted
 7. **LSP integration enables real-time IDE response**: Immediately notifying the language server after edits means users see the latest diagnostics without waiting
-8. **File history provides an additional safety net**: Idempotent backups based on content hashing, adding a layer of protection beyond Git
+8. **File history provides an additional safety net**: Idempotent backups named by path hash with snapshot-level dedup, adding a layer of protection beyond Git
 9. **Input preprocessing is silent but critical**: Trailing whitespace trimming and API desanitization silently correct common imperfections in model output before validation, a process neither users nor the model need to be aware of
 10. **The line ending asymmetry between Edit and Write is deliberate**: Edit preserves the original line ending style (minimal change principle), Write always uses LF (model intent principle) — both are the correct choice in their respective scenarios
 11. **Cascade protection prevents self-referential edits**: Substring checking in multi-step edits ensures subsequent edits don't accidentally modify text just inserted by a previous step, intercepting a class of hard-to-debug bugs at the source

@@ -11,7 +11,7 @@ Fred Brooks distinguished between **essential complexity** and **accidental comp
 - **Essential complexity**: Looping model calls, executing tools, managing context -- these 7 components are problems that any coding agent must solve
 - **Accidental complexity**: MCP protocol integration, Vim mode, OSC 8 hyperlinks, OAuth authentication -- these are requirements driven by production environments and user experience
 
-The [claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch) project is built precisely around this idea: implementing a fully functional coding agent with ~3000 lines of code and 11 source files (including advanced capabilities such as memory, skills, multi-Agent, and permission rules). The approach of this chapter is -- **starting from this minimal implementation, tracing back to the Claude Code production code component by component**, understanding what problem each layer of complexity exists to solve.
+The [claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch) project is built precisely around this idea: implementing a fully functional minimal coding agent with ~1,300 lines of code and 6 source files. The approach of this chapter is -- **starting from this minimal implementation, tracing back to the Claude Code production code component by component**, understanding what problem each layer of complexity exists to solve.
 
 **Reading guide**:
 
@@ -20,6 +20,8 @@ The [claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from
 - **15.2.7** (CLI UX) is the **interaction layer** -- enabling humans to use this agent
 
 ## 15.2 The Seven Minimal Necessary Components
+
+> This chapter's component walkthrough follows the initial minimal version of [claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch) (commit `e2c4c68`: ~1,300 lines, 6 source files, 6 tools). Advanced capabilities such as memory, skills, multi-Agent, and permission rules were added in later versions of the repository and are outside the scope of this walkthrough.
 
 ```mermaid
 graph TD
@@ -252,7 +254,7 @@ This evolution is not over-engineering, but is driven by three production requir
 
 **1. Safety Classification Methods**
 
-The three methods `isReadOnly()`, `isConcurrencySafe()`, and `needsPermission()` each serve different levels of safety judgment. `isReadOnly()` determines whether permission checks can be skipped; `isConcurrencySafe()` determines whether a tool can execute in parallel with other tools; `needsPermission()` determines whether a confirmation dialog needs to be shown. In the minimal version, all tools execute serially with uniform permission checks, so these distinctions are unnecessary. But when you have 66+ tools and want high performance, these classifications become critical.
+The three methods `isReadOnly()`, `isConcurrencySafe()`, and `needsPermission()` each serve different levels of safety judgment. `isReadOnly()` determines whether permission checks can be skipped; `isConcurrencySafe()` determines whether a tool can execute in parallel with other tools; `needsPermission()` determines whether a confirmation dialog needs to be shown. In the minimal version, all tools execute serially with uniform permission checks, so these distinctions are unnecessary. But when you have dozens of tools and want high performance, these classifications become critical.
 
 **2. Fail-Closed Defaults**
 
@@ -291,7 +293,7 @@ function partitionToolCalls(toolUseMessages, toolUseContext): Batch[] {
 
 When the model calls `GrepTool`, `GlobTool`, and `ReadFileTool` simultaneously in a single response, these three read-only tools are grouped into one batch and executed in parallel, reducing latency from 3x to 1x. But if a `FileWriteTool` is mixed in, it is separated into its own serial batch to ensure atomicity of write operations. This kind of concurrency orchestration is impossible in the minimal version, because the minimal version's tools are JSON objects -- there is nowhere to declare `isConcurrencySafe()`.
 
-Additionally, Claude Code has a **ToolSearch lazy loading** mechanism: not all 66+ tools are placed in the system prompt (that would consume too many tokens). Instead, infrequently used tools are marked as `shouldDefer` and discovered on demand through a special ToolSearch tool. This is similar to dynamic linking in operating systems -- instead of loading all libraries into memory, they are loaded only when needed.
+Additionally, Claude Code has a **ToolSearch lazy loading** mechanism: not all of these dozens of tools are placed in the system prompt (that would consume too many tokens). Instead, infrequently used tools are marked as `shouldDefer` and discovered on demand through a special ToolSearch tool. This is similar to dynamic linking in operating systems -- instead of loading all libraries into memory, they are loaded only when needed.
 
 ### Component 3: Agent Loop
 
@@ -927,9 +929,9 @@ Tools: `read_file`, `write_file`, `run_shell` -- just these three form a complet
 
 ## 15.4 The claude-code-from-scratch Project
 
-The [claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch) project provides a runnable minimal implementation (~3000 lines of core code) to help you:
+The [claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch) project provides a runnable minimal implementation (~1,300 lines of core code) to help you:
 
-1. **Understand core mechanisms**: Without being overwhelmed by 512K lines of code, focus on the 11 essential components
+1. **Understand core mechanisms**: Without being overwhelmed by 512K lines of code, focus on the 7 essential components
 2. **Hands-on experimentation**: Modify loop logic, add new tools, adjust system prompts
 3. **Learn design decisions**: Understand why each component exists and why it's implemented this way
 4. **Progressive building**: Gradually add features from the minimal version, experiencing the value of each layer of complexity
@@ -980,6 +982,6 @@ The biggest misconception in building a coding agent is thinking "writing a good
 
 ---
 
-> **Hands-on Practice**: [claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch) is the complete implementation of this chapter's "minimal necessary components" philosophy -- ~3,000 lines of TypeScript, covering the Agent loop, tools, system prompts, streaming output, memory, skills, multi-Agent, and permission rules. Run with `npm run build && npm start`.
+> **Hands-on Practice**: [claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch) is the complete implementation of this chapter's "minimal necessary components" philosophy -- ~1,300 lines of TypeScript, covering the Agent loop, 6 tools, system prompts, streaming output, and basic permission control. Run with `npm run build && npm start`.
 
 Previous chapter: [User Experience Design](/en/docs/12-user-experience.md) | Return to: [Quick Start](/en/docs/quick-start.md)

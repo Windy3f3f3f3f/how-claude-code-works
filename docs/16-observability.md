@@ -224,7 +224,7 @@ Perfetto 本地追踪也一样，是 Ant-only、编译期门控的。它能把 s
 | system prompt 全文 | 仅 beta 详细追踪 | 不进普通导出 |
 | 模型思考原文 | 仅内部 | 外部永不导出 |
 
-（前四行在快照里有对应的脱敏代码；`OTEL_LOG_RAW_API_BODIES` 与助手回复开关属快照之后新增，据官方文档。）
+（第 1、3、4 行——用户 prompt / 工具参数命令 / 工具输入输出——在快照里有对应的脱敏代码；第 2 行“助手回复”（`OTEL_LOG_ASSISTANT_RESPONSES`）与第 5 行 `OTEL_LOG_RAW_API_BODIES` 同属快照之后新增，据官方文档。）
 
 几条设计意图值得点破。
 
@@ -232,7 +232,7 @@ Perfetto 本地追踪也一样，是 Ant-only、编译期门控的。它能把 s
 
 隐私门控和基数控制常常是同一个旋钮的两面。`prompt.id` 只进事件、不进指标；`app.version` 默认关——一个是怕泄可归因信息，一个是怕基数爆炸，但拧的是同一批开关。这不是巧合：往聚合后台少塞信息，既省成本又护隐私，两个诉求经常指向同一个决定。
 
-子进程这块有个容易搞反的点：CC 不把 `OTEL_*` 那套导出配置传给它 spawn 的子进程（Bash、hook、MCP server、language server 都拿不到你的后端地址和凭证，免得配置外泄给第三方）；但据当前官方文档，追踪激活时它会把“这是哪条 trace”的关联信息（W3C 的 `TRACEPARENT`）注入 Bash/PowerShell 子进程，好让子进程的 span 挂到同一条 trace 上。传的是关联信息，不是导出凭证，两者别混。（这两个环境变量在快照里 grep 不到，属快照之后新增，据官方文档。）
+子进程这块有个容易搞反的点：默认（普通本地会话）CC 把整份环境原样透传给它 spawn 的子进程，`OTEL_*` 也在内；只有当 claude-code-action 把 `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` 置真——也就是会话被暴露给不可信内容的 CI 场景（配了 `allowed_non_write_users`）——CC 才从子进程环境里剥掉那 4 个携带 `Authorization=Bearer` 的 OTLP header 变量（`OTEL_EXPORTER_OTLP_HEADERS` 那一批），免得凭证被 shell 展开外泄给第三方；而后端地址 `OTEL_EXPORTER_OTLP_ENDPOINT` 任何情况下都不剥离。但据当前官方文档，追踪激活时它会把“这是哪条 trace”的关联信息（W3C 的 `TRACEPARENT`）注入 Bash/PowerShell 子进程，好让子进程的 span 挂到同一条 trace 上。传的是关联信息，不是导出凭证，两者别混。（这两个环境变量在快照里 grep 不到，属快照之后新增，据官方文档。）
 
 ---
 

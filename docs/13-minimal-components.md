@@ -11,7 +11,7 @@ Fred Brooks 在《人月神话》中区分了**本质复杂性**（essential com
 - **本质复杂性**：循环调用模型、执行工具、管理上下文——这 7 个组件是任何 coding agent 都必须解决的问题
 - **偶然复杂性**：MCP 协议集成、Vim 模式、OSC 8 超链接、OAuth 认证——这些是生产环境和用户体验驱动的需求
 
-[claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch) 项目正是围绕这个思路构建的：用 ~3000 行代码、11 个源文件，实现一个功能完整的 coding agent（含记忆、技能、多 Agent、权限规则等进阶能力）。本章的方法是——**从这个最小实现出发，逐组件追溯到 Claude Code 生产代码**，理解每一层复杂性是为了解决什么问题而存在的。
+[claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch) 项目正是围绕这个思路构建的：用 ~1,300 行代码、6 个源文件，实现一个功能完整的最小 coding agent。本章的方法是——**从这个最小实现出发，逐组件追溯到 Claude Code 生产代码**，理解每一层复杂性是为了解决什么问题而存在的。
 
 **阅读建议**：
 
@@ -20,6 +20,8 @@ Fred Brooks 在《人月神话》中区分了**本质复杂性**（essential com
 - **15.2.7**（CLI 交互）是**交互层**——让人类能够使用这个 agent
 
 ## 15.2 七个最小必要组件
+
+> 本章的组件走查以 [claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch) 的初始最小版本（commit `e2c4c68`，~1,300 行、6 个源文件、6 个工具）为准；记忆、技能、多 Agent、权限规则等进阶能力是仓库后续版本才加入的，不在本章走查范围。
 
 ```mermaid
 graph TD
@@ -252,7 +254,7 @@ interface Tool<Input, Output, P extends z.ZodTypeAny> {
 
 **1. 安全分类方法**
 
-`isReadOnly()`、`isConcurrencySafe()`、`needsPermission()` 三个方法各服务于不同层面的安全判断。`isReadOnly()` 决定是否可以跳过权限检查；`isConcurrencySafe()` 决定是否可以和其他工具并行执行；`needsPermission()` 决定是否需要弹出确认对话框。在最小版本中，所有工具串行执行、统一检查权限，不需要这些区分。但当你有 66+ 工具且想要高性能时，这些分类变得至关重要。
+`isReadOnly()`、`isConcurrencySafe()`、`needsPermission()` 三个方法各服务于不同层面的安全判断。`isReadOnly()` 决定是否可以跳过权限检查；`isConcurrencySafe()` 决定是否可以和其他工具并行执行；`needsPermission()` 决定是否需要弹出确认对话框。在最小版本中，所有工具串行执行、统一检查权限，不需要这些区分。但当你有数十个工具且想要高性能时，这些分类变得至关重要。
 
 **2. fail-closed 默认值**
 
@@ -291,7 +293,7 @@ function partitionToolCalls(toolUseMessages, toolUseContext): Batch[] {
 
 当模型在一次响应中同时调用 `GrepTool`、`GlobTool` 和 `ReadFileTool` 时，这三个只读工具会被分为一个批次并行执行，耗时从 3x 降为 1x。但如果其中夹了一个 `FileWriteTool`，它会被单独分为一个串行批次，确保写操作的原子性。这种并发编排在最小版本中不可能实现，因为最小版本的工具是 JSON 对象——没有地方声明 `isConcurrencySafe()`。
 
-此外，Claude Code 还有 **ToolSearch 延迟加载**机制：66+ 工具并不全部放进系统提示词（那样会消耗太多 token），而是将不常用的工具标记为 `shouldDefer`，通过一个特殊的 ToolSearch 工具按需发现。这类似于操作系统的动态链接——不是把所有库都加载进内存，而是用到时才加载。
+此外，Claude Code 还有 **ToolSearch 延迟加载**机制：数十个工具并不全部放进系统提示词（那样会消耗太多 token），而是将不常用的工具标记为 `shouldDefer`，通过一个特殊的 ToolSearch 工具按需发现。这类似于操作系统的动态链接——不是把所有库都加载进内存，而是用到时才加载。
 
 ### 组件 3：Agent Loop（代理循环）
 
@@ -927,9 +929,9 @@ graph LR
 
 ## 15.4 claude-code-from-scratch 项目
 
-[claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch) 项目提供了一个可运行的最小实现（~3000 行核心代码），帮助你：
+[claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch) 项目提供了一个可运行的最小实现（~1,300 行核心代码），帮助你：
 
-1. **理解核心机制**：不被 512K 行代码淹没，聚焦于 11 个本质组件
+1. **理解核心机制**：不被 512K 行代码淹没，聚焦于 7 个本质组件
 2. **动手实验**：修改循环逻辑、添加新工具、调整系统提示词
 3. **学习设计决策**：理解每个组件为什么存在、为什么这样实现
 4. **渐进式构建**：从最小版本逐步添加功能，体会每层复杂性的价值
