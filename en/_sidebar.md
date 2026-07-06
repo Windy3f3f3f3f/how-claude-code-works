@@ -29,6 +29,9 @@
 - **Runtime Observability**
   - [16. Observability: Metrics & Traces](/en/docs/16-observability.md)
 
+- **Post-Snapshot Features (Black-Box RE)**
+  - [17. Autonomy & Continuation: /goal and /loop](/en/docs/17-autonomy-goal-loop.md)
+
 - **Reference**
   - [Quick Reference](/en/docs/reference.md)
 

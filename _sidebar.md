@@ -29,6 +29,9 @@
 - **运行观测**
   - [16. 可观测性：Metrics 与 Trace](/docs/16-observability.md)
 
+- **快照之后的新功能（黑盒逆向）**
+  - [17. 自治与续跑：/goal 与 /loop](/docs/17-autonomy-goal-loop.md)
+
 - **参考**
   - [速查参考](/docs/reference.md)
 

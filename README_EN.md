@@ -153,6 +153,7 @@ To prevent conflicts from multiple agents editing the same files, the system use
 | 14 | [User Experience](./en/docs/12-user-experience.md) | Why React for terminal UI, streaming output implementation, terminal interaction details |
 | 15 | [Minimal Components](./en/docs/13-minimal-components.md) | The minimum modules needed for a coding agent, the evolution path from 500 lines to 500K |
 | 16 | [Observability: Metrics & Traces](./en/docs/16-observability.md) | The EXPLAIN of a prompt, three observability planes + transcript substrate, the prompt.id join key, an OTel metric/event/span walkthrough, cost accounting, permission decision logging, privacy boundaries |
+| 17 🔍 | [Autonomy & Continuation: `/goal` and `/loop`](./en/docs/17-autonomy-goal-loop.md) | **Post-snapshot · black-box RE**: the two paradigms of autonomy (a gatekeeping evaluator vs a self-scheduling alarm), the `/goal` evaluator's full system prompt and its `impossible` loop-brake, `/loop`'s parsing rules and the cron / ScheduleWakeup execution paths, with a reproducible reverse-engineering method in the appendix |
 
 ## Who should read this?
 
@@ -197,7 +198,7 @@ Our analysis is based on a source snapshot of roughly **v2.1.6x (late March 2026
 Planned topics:
 
 - [x] **Observability: Metrics & Trace** (proposed in [#10](https://github.com/Windy3f3f3f3f/how-claude-code-works/issues/10)) — how Claude Code instruments itself: OpenTelemetry metrics/events export, cost accounting, session transcripts as turn-level traces. **Done → [Chapter 16: Observability](./en/docs/16-observability.md)**
-- [ ] **The autonomy loop: `/goal`, `/loop` and cron scheduling** (v2.1.71 / v2.1.139) — set a completion condition and Claude keeps working across turns until it's met; recurring tasks on fixed or model-chosen intervals
+- [x] **The autonomy loop: `/goal`, `/loop` and cron scheduling** (v2.1.71 / v2.1.139) — set a completion condition and Claude keeps working across turns until it's met; recurring tasks on fixed or model-chosen intervals. **Done → [Chapter 17: Autonomy & Continuation](./en/docs/17-autonomy-goal-loop.md)** (includes the full prompt text of the `/goal` evaluator and the `/loop` command + a reproducible RE method)
 - [ ] **Dynamic Workflows (trigger word "ultracode")** (v2.1.154–160) — an orchestration script that directs tens to hundreds of agents in the background, with token budgets, resumable runs and the `/workflows` panel
 - [ ] **Auto Mode: permissions enter the classifier era** (opt-in dropped in v2.1.152) — from "rules + confirmation dialogs" to an ML classifier deciding allow/deny per action, honoring spoken boundaries like "don't push"
 - [ ] **The background agent fleet** (v2.1.139–198) — `/bg`, a resident daemon, the global `claude agents` view, retire→wake lifecycle, auto commit+push+draft-PR on completion, subagents running in the background by default
