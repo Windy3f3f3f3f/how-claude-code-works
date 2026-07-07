@@ -47,6 +47,8 @@ const results = await pipeline(
 )
 ```
 
+What exactly is a spawned subagent? Capturing a real workflow's network requests makes it plain. It's an independent client-side request, and the first line of its system prompt is "You are a subagent spawned by a workflow orchestration script," with a pointed note: your final text is returned verbatim as a string to the calling script — it's your return value, not a message to a human. It's also a leaf worker. The tools the main model has for further orchestration and scheduling — `Agent`, `Workflow`, `ScheduleWakeup`, plus `TaskOutput` — are stripped from a subagent's tool set (in the capture the subagent had 76 tools to the main model's 80, and those four are the difference). So it can only do the work, not fan out again. And to the main model, the whole Workflow call is a background task: it returns a task id immediately, and a `<task-notification>` arrives when the workflow completes.
+
 ## 19.3 Default to pipeline; parallel is a barrier — why
 
 This is the finest bit of the whole design, and the part the tool description spends the most space on: when to use `pipeline` and when to use `parallel`.
@@ -61,9 +63,9 @@ One more thing on error semantics: if a task in `parallel` throws, that slot bec
 
 ## 19.4 Getting subagents to return structured data
 
-For multiple agents to chain into a pipeline, one's output has to feed the next. Plain text is awkward — you'd have to parse it. Workflow's answer is to give `agent()` a `schema` (a JSON Schema): with it, the spawned subagent is forced to call a structured-output tool, and `agent()` returns a validated object directly, no parsing on your end.
+For multiple agents to chain into a pipeline, one's output has to feed the next. Plain text is awkward — you'd have to parse it. Workflow's answer is to give `agent()` a `schema` (a JSON Schema). With it, the runtime injects a tool called `StructuredOutput` into that subagent's tool set, with your schema set as that tool's input schema; its description says "You MUST call this tool exactly once at the end." The subagent has to call it once when done, its argument is validated against your schema on the spot (`required` and `additionalProperties: false` both enforced), and `agent()` gets a validated object, no parsing on your end. (This mechanism was confirmed by capturing a real schema workflow and seeing that `StructuredOutput` tool in the subagent's request.)
 
-The key is that validation happens at the tool-call layer: on the success path, `agent()` gets a validated object directly; a wrong shape triggers a retry or a nudge, but if the subagent is skipped, hits a terminal error, or exceeds the structured-output retries, that slot still fails and returns null. So chaining like "the previous agent emits a batch of `{file, line, severity}`, the next agent verifies each" is reliable on the success path — what flows between stages is structured data, not strings waiting to be regexed. In the 19.2 example, the two schemas `FINDINGS` and `VERDICT` are exactly how the review stage and the verify stage connect.
+The key is that validation happens at the tool-call layer: on the success path, `agent()` gets a validated object directly; a wrong shape triggers a nudge and retry, but if the subagent never calls it or exceeds the structured-output retry cap, that `agent()` call fails — inside a `parallel`/`pipeline` slot the failure is isolated to null, while a direct `await agent(...)` throws. So chaining like "the previous agent emits a batch of `{file, line, severity}`, the next agent verifies each" is reliable on the success path — what flows between stages is structured data, not strings waiting to be regexed. In the 19.2 example, the two schemas `FINDINGS` and `VERDICT` are exactly how the review stage and the verify stage connect.
 
 ## 19.5 Three caps and a budget
 
@@ -81,7 +83,7 @@ With hundreds of agents working in parallel, two things go wrong: they overwrite
 
 Isolation is via worktrees. Pass `isolation: 'worktree'` to `agent()` and the runtime gives that agent its own git worktree to edit in its own copy, auto-removing it if unchanged when done and handing back the path if changed. This is exactly Chapter 8's worktree isolation substrate (see 8.2), reused directly. The description also warns it's expensive — a few hundred milliseconds plus a disk copy per agent — so use it only when "parallel writes would conflict."
 
-Resume is via a journal and a runId. Each run has an id, and every `agent()`'s actual return value is recorded in the journal; on a rerun with `resumeFromRunId`, the longest unchanged prefix of `agent()` calls (same arguments) hits last time's cached results from the journal, and only from the first changed call onward does it actually rerun. The binary shows the skeleton of this: the runtime registers and manages this `local_workflow` task by `workflowRunId`, and cache hits are served from the same runId's journal (related events `tengu_workflow_journal_started_hit_respawn`, `tengu_workflow_saved`). So a 100-agent migration that dies at agent 60 resumes without redoing the first 59. This also explains why 19.2 forbids `Date.now()`/`Math.random()` — the script must be replayable, or the cache hits won't line up.
+Resume is via a journal and a runId. Each run has an id (like `wf_000d0acb-383`), and every `agent()` writes two lines to the journal — a `started` and a `result` — both carrying a `v2:<hash>` key that is the content hash of that call (prompt plus opts). On a rerun with `resumeFromRunId`, the longest prefix of `agent()` calls whose key is unchanged hits last time's stored results from the journal, and only from the first call whose hash changed does it actually rerun. (This is visible in the `journal.jsonl` a real workflow run leaves behind, under `<session>/subagents/workflows/wf_<runId>/`, with each subagent's full transcript saved alongside as `agent-<id>.jsonl`.) The binary shows the skeleton of this: the runtime registers and manages this `local_workflow` task by `workflowRunId`, and cache hits are served from the same runId's journal (related events `tengu_workflow_journal_started_hit_respawn`, `tengu_workflow_saved`). So a 100-agent migration that dies at agent 60 resumes without redoing the first 59. This also explains why 19.2 forbids `Date.now()`/`Math.random()` — the script must be replayable, or the cache hits won't line up.
 
 ## 19.7 Orchestrating reliability into the process
 
@@ -95,13 +97,15 @@ The genuinely interesting thing about Workflow isn't just "parallel is fast" —
 
 Together these patterns make a plain claim: the value of multiple agents isn't speed but that structured redundancy can systematically correct for "a single agent easily overlooking things."
 
+These patterns aren't hypothetical, either. Claude Code's built-in `/deep-research` is a workflow built on exactly them; the phase structure its metadata exposes in the binary reads: first Scope, decomposing the question into 5 search angles; then Search, 5 parallel WebSearch agents, one per angle; then Fetch, deduping URLs, fetching the top 15 sources, extracting falsifiable claims; then Verify, 3-vote adversarial verification per claim (2 of 3 refutes to kill); then Synthesize, merging semantic duplicates, ranking by confidence, adding citations. Count them off: the multi-path search is a multi-modal sweep, the 3-vote / 2-of-3 is adversarial verify, and the URL-dedup at the fetch step is exactly the "gather everything first" that needs a barrier — one workflow uses nearly all the patterns from the earlier sections.
+
 ## 19.8 ultracode, the panel, deep-research, and the off switch
 
 You won't usually hand-write a workflow script. Two entry points involve the word `ultracode`, and they're worth telling apart. One is including it in a prompt — that opts this turn into the Workflow tool, so the model writes a workflow itself and runs it, breaking a big task apart and fanning it out, just for this turn. The other is the session-level `/effort ultracode`, which is what the official docs describe as "xhigh reasoning + standing automatic workflow orchestration," on for the whole session. The `/workflows` panel shows each workflow's live progress (the phases in `meta` and the messages from `log()` show up here). `/deep-research` is an officially bundled workflow — multi-path search, deep reading, adversarial verification, then synthesis into a cited report — itself a finished product of this orchestration capability. The whole feature can be turned off with `CLAUDE_CODE_DISABLE_WORKFLOWS=1`.
 
 ## 19.9 From ultraplan to dynamic workflows: an evolution you can reconcile
 
-This capability, too, can be reconciled across two ends. The snapshot end (v2.1.88) already has its predecessor — the `utils/ultraplan/` directory: a `keyword.ts` that detects the trigger word `ultraplan` in your input (careful enough to skip false positives inside quotes, inside paths, after a question mark, or in a slash command, its shape aligned with the "extended thinking" trigger detection), and a `ccrSession.ts` managing a cloud/remote session. In other words, back then the feature was called `ultraplan`, triggered by a keyword, and produced a plan via the cloud.
+This capability, too, can be reconciled across two ends. The snapshot end (v2.1.88) already has its predecessor — the `utils/ultraplan/` directory: a `keyword.ts` that detects the trigger word `ultraplan` in your input (careful enough to skip false positives inside quotes, inside paths, after a question mark, or in a slash command, its shape aligned with the "extended thinking" trigger detection), and a `ccrSession.ts` handling the cloud-session side: `/ultraplan` teleports to a remote session at launch and sets it to plan mode, after which `ccrSession` polls the event stream every 3 seconds, waits for you to approve an `ExitPlanMode` in the browser, and extracts the plan text. In other words, back then the feature was called `ultraplan`, triggered by a keyword, and did "run plan mode in the cloud, wait for your approval, retrieve a plan."
 
 The current end (2.1.201): the trigger word became `ultracode`, the telemetry went from a `tengu_ultraplan_*` family to a `tengu_workflow_*` family, and the capability grew from "produce a plan via the cloud" into "a deterministic JS script fanning out an agent fleet." The keyword-trigger machinery carried straight over, while the fan-out orchestration runtime is what grew after the snapshot. The trigger skeleton comes from the snapshot source, the finished orchestration from the current binary — another line showing "didn't leak with the snapshot" doesn't mean "can't be analyzed."
 
@@ -113,7 +117,7 @@ First, read the tool description. Workflow is a tool injected into the main mode
 
 Second, pull strings and runtime constants from the binary. `grep` all the `tengu_workflow_*` and `tengu_ultraplan_*` event names for a feature map; the minified runtime code also yields the cap constant `1000` and the skeleton of the resume mechanism (`workflowRunId` / `resume` / the task registry).
 
-Third, capture the fan-out. The source shows each spawned agent is an independent client-side request, so standing up a plaintext reverse proxy (recipe in [Chapter 17](17-autonomy-goal-loop.md), 17.5) and running a very small workflow shows the handful of subagent requests one script dispatches in parallel. Mind the scale: a workflow spawns lots of agents and burns tokens, so keep the probe to two or three agents, read-only tasks, and stop when done.
+Third, capture the fan-out. Stand up a plaintext reverse proxy (recipe in [Chapter 17](17-autonomy-goal-loop.md), 17.5) and run a very small workflow, and you'll see the subagent requests one script dispatches in parallel. This chapter actually ran two probes. The 2-agent parallel one captured the two subagents' request timestamps differing by only 0.01 seconds — confirming concurrent dispatch — along with the "You are a subagent spawned by a workflow orchestration script" system prompt. The schema one showed the `StructuredOutput` tool injected into the subagent's tool set, its input schema being the schema you gave. Mind the scale: a workflow spawns lots of agents and burns tokens, so keep the probe to two or three agents, read-only tasks, and stop when done.
 
 Fourth, read the snapshot predecessor. `utils/ultraplan/` is in the v2.1.88 snapshot, used to reconcile the ultraplan → dynamic-workflows evolution.
 
@@ -191,4 +195,22 @@ once spent() reaches total, further agent() calls throw.
 - Multi-modal sweep / Completeness critic: "what's missing?" becomes next round.
 ```
 
-> Provenance: the excerpts above are from the runtime-injected Workflow tool description; sentences like `min(16, cpu cores - 2)` / `at most 4096 items` / `capped at 1000` are cross-checked verbatim against the 2.1.201 client binary. Examples and pattern details are elided with `…`. Any one workflow's actual script, the internals of the runtime's concurrency scheduler, and the model tier behind `ultracode` are all out of view.
+### The subagent system prompt and the StructuredOutput tool (verbatim, reverse-proxy capture, 2.1.202)
+
+The head of a workflow-spawned subagent's system prompt:
+
+```text
+You are a subagent spawned by a workflow orchestration script. Use the tools available to complete the task.
+
+CRITICAL: Your final text response is returned **verbatim** as a string to the calling script — it is your return value, not a message to a human. Output the literal result (data, JSON, text). Do NOT output confirmation…
+```
+
+When a `schema` is passed, the `StructuredOutput` tool injected into the subagent's tool set (its `input_schema` being the caller's schema):
+
+```text
+StructuredOutput — Use this tool to return your final response in the requested
+structured format. You MUST call this tool exactly once at the end of your
+response to provide the structured output.
+```
+
+> Provenance: the tool-description excerpts are from the runtime-injected Workflow tool; sentences like `min(16, cpu cores - 2)` / `at most 4096 items` / `capped at 1000` are cross-checked verbatim against the 2.1.201 binary, while the subagent system prompt and the `StructuredOutput` tool come from a plaintext reverse-proxy capture of a probe workflow actually run on the 2.1.202 client. Examples and pattern details are elided with `…`. Any one workflow's actual script, the internals of the runtime's concurrency scheduler, and the model tier behind `ultracode` are all out of view.

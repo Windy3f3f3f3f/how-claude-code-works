@@ -47,6 +47,8 @@ const results = await pipeline(
 )
 ```
 
+派生出去的一个 subagent 到底是什么？抓一次真实 workflow 的网络请求就看清了。它是一个独立的客户端请求，系统提示头一句就是 "You are a subagent spawned by a workflow orchestration script"，还特意交代：你的最终文本会被原样当成字符串返回给调用它的脚本——那是返回值，不是给人看的消息。它还是个叶子 worker。主模型手里那几个能再往下编排、排程的工具——`Agent`、`Workflow`、`ScheduleWakeup`，加上 `TaskOutput`——都从子 agent 的工具集里摘掉了（抓包里子 agent 76 个工具、主模型 80 个，差的正是这四个）。所以它只能干活，不能再 fan-out。而对主模型来说，整个 Workflow 调用是个后台任务：一调就立刻返回一个 task id，workflow 跑完再用 `<task-notification>` 通知回来。
+
 ## 19.3 默认用 pipeline，parallel 是个 barrier——为什么
 
 这是整套设计里最见功力的一点，也是工具描述里花最多篇幅讲的：什么时候用 `pipeline`、什么时候用 `parallel`。
@@ -61,9 +63,9 @@ const results = await pipeline(
 
 ## 19.4 让 subagent 返回结构化数据
 
-多个 agent 要串成流水线，前一个的输出得能喂给后一个。纯文本不好办——你还得解析。Workflow 的做法是给 `agent()` 一个 `schema`（一份 JSON Schema）：带上它，被派生的 subagent 就被强制去调一个结构化输出工具，`agent()` 直接返回一个校验过的对象，不用你再解析。
+多个 agent 要串成流水线，前一个的输出得能喂给后一个。纯文本不好办——你还得解析。Workflow 的做法是给 `agent()` 一个 `schema`（一份 JSON Schema）。带上它，运行时就往这个 subagent 的工具集里塞一个叫 `StructuredOutput` 的工具，而且把这份 schema 作为该工具的 `input_schema`；工具描述写着 "You MUST call this tool exactly once at the end"。subagent 干完活必须调它一次，参数当场按你的 schema 校验（`required`、`additionalProperties: false` 都生效），`agent()` 于是拿到一个校验过的对象，不用你再解析。（这套机制是抓一次带 schema 的真实 workflow、在子 agent 的请求里看到那个 `StructuredOutput` 工具确认的。）
 
-关键在于校验发生在工具调用那一层：成功路径下 `agent()` 直接拿到校验过的对象；形状不对会触发重试或补救，但要是 subagent 被跳过、撞上终端错误、或超了结构化输出的重试次数，这一格仍会失败、返回 null。于是"上一个 agent 产出一批 `{file, line, severity}`、下一个 agent 挨个 verify"这种拼装在成功路径上是可靠的——stage 之间流动的是结构化数据，不是等着被正则的字符串。19.2 那个例子里，`FINDINGS` 和 `VERDICT` 两个 schema 就是这么让 review 阶段和 verify 阶段对接上的。
+关键在于校验发生在工具调用那一层：成功路径下 `agent()` 直接拿到校验过的对象；形状不对会先 nudge、再重试，但要是 subagent 到末尾还是不调用、或超了结构化输出的重试上限，这次 `agent()` 就失败——它若在 `parallel`/`pipeline` 的 slot 里，失败被隔离成 null；直接 `await agent(...)` 则会抛错。于是"上一个 agent 产出一批 `{file, line, severity}`、下一个 agent 挨个 verify"这种拼装在成功路径上是可靠的——stage 之间流动的是结构化数据，不是等着被正则的字符串。19.2 那个例子里，`FINDINGS` 和 `VERDICT` 两个 schema 就是这么让 review 阶段和 verify 阶段对接上的。
 
 ## 19.5 三道上限加一个预算
 
@@ -81,7 +83,7 @@ const results = await pipeline(
 
 隔离靠 worktree。给 `agent()` 传 `isolation: 'worktree'`，运行时就给这个 agent 开一个独立的 git worktree，让它在自己那份副本里改，跑完没改动就自动删、有改动就把路径交回来。这正是第 8 章讲的 worktree 隔离底座（见 8.2），Workflow 直接拿来用。描述里也提醒它贵——每个 agent 多花几百毫秒加一份磁盘，所以只在"并行写、会互相冲突"时才开。
 
-断点续跑靠 journal 和 runId。每次 run 有个 id，脚本每个 `agent()` 的真实返回值都记进 journal；带 `resumeFromRunId` 重跑时，最长的那一段"参数没变"的 `agent()` 前缀直接命中 journal 里上次缓存的结果，从第一个改动过的调用起才真重跑。二进制里能读到这套机制的骨架：运行时按 `workflowRunId` 注册和管理这个 `local_workflow` 任务，缓存命中则由同一 runId 的 journal 提供（相关事件 `tengu_workflow_journal_started_hit_respawn`、`tengu_workflow_saved`）。所以一个 100 个 agent 的迁移跑到第 60 个断了，接着跑不会重做前 59 个。这也解释了 19.2 为什么禁 `Date.now()`/`Math.random()`——脚本必须可重放，缓存命中才对得上。
+断点续跑靠 journal 和 runId。每次 run 有个 id（形如 `wf_000d0acb-383`），脚本每个 `agent()` 都往 journal 里记两条——一条 `started`、一条 `result`——都带一个 `v2:<哈希>` 的 key，那个 key 就是这次调用（prompt 加 opts）的内容哈希。带 `resumeFromRunId` 重跑时，最长的那一段"key 没变"的 `agent()` 前缀直接命中 journal 里上次存的 result，从第一个哈希变了的调用起才真重跑。（这是从一次真跑 workflow 留下的 `journal.jsonl` 里看到的，它在 `<会话>/subagents/workflows/wf_<runId>/` 下，每个子 agent 的完整对话另存一份 `agent-<id>.jsonl`。）二进制里能读到这套机制的骨架：运行时按 `workflowRunId` 注册和管理这个 `local_workflow` 任务，缓存命中则由同一 runId 的 journal 提供（相关事件 `tengu_workflow_journal_started_hit_respawn`、`tengu_workflow_saved`）。所以一个 100 个 agent 的迁移跑到第 60 个断了，接着跑不会重做前 59 个。这也解释了 19.2 为什么禁 `Date.now()`/`Math.random()`——脚本必须可重放，缓存命中才对得上。
 
 ## 19.7 把可靠性编排进流程
 
@@ -95,13 +97,15 @@ Workflow 真正有意思的地方，不只是"并行快"，而是它把一套追
 
 这些范式合起来是一个朴素的主张：多个 agent 的价值不在于快，而在于能用结构化的冗余把"单个 agent 容易疏漏"这件事系统地纠回来。
 
+这些范式也不是纸上谈兵。Claude Code 自带的 `/deep-research` 就是照着搭的一个 workflow；二进制里它的 phase 元数据显示的结构是：先 Scope，把问题拆成 5 个搜索角度；再 Search，5 个并行 WebSearch agent、每个角度一个；再 Fetch，把 URL 去重、取前 15 个源、抽出可证伪的断言；再 Verify，每条断言派 3 票做对抗验证、2/3 反驳才判死；最后 Synthesize，合并语义重复、按置信度排序、附上引用。数一下就对上了：多路搜索是 multi-modal sweep，3 票 2/3 是对抗式复核，取源那步的 URL 去重正是"先凑齐再往下"、需要 barrier 的地方——一个 workflow 把前面几节讲的范式几乎全用上了。
+
 ## 19.8 ultracode、面板、deep-research 与关停
 
 平时你未必手写 workflow 脚本。有两个入口都带 `ultracode` 这个词，得分清。一是在 prompt 里带上它——这让当前这一轮 opt-in 成 Workflow 工具，模型就自己写一段 workflow 并跑起来，把一个大活拆开、并行铺出去，只作用于这一次。二是会话级的 `/effort ultracode`，那才是官方说的"xhigh 推理 + 常驻的自动 workflow 编排"，在整个会话里都开着。`/workflows` 面板看每个 workflow 的实时进度（`meta` 里的 phase 和 `log()` 打的消息就显示在这儿）。`/deep-research` 则是一个官方打包好的 workflow，多路搜索、深读、对抗式核实再综合成带引用的报告——它本身就是这套编排能力的一个成品。整个功能能用 `CLAUDE_CODE_DISABLE_WORKFLOWS=1` 关掉。
 
 ## 19.9 从 ultraplan 到 dynamic workflows：一条可对账的演进线
 
-这套能力也能两端对账。快照那头（v2.1.88）已经有它的前身——`utils/ultraplan/` 目录：一个 `keyword.ts` 负责在你的输入里检测触发词 `ultraplan`（细致到跳过引号里、路径里、问号后、slash 命令里的假阳性，形状跟"深度思考"的触发检测对齐），一个 `ccrSession.ts` 管一个云端/远程会话。也就是说，当时这个功能叫 `ultraplan`，靠关键词触发、走云端出一份 plan。
+这套能力也能两端对账。快照那头（v2.1.88）已经有它的前身——`utils/ultraplan/` 目录：一个 `keyword.ts` 负责在你的输入里检测触发词 `ultraplan`，细致到跳过引号、路径、问号后、slash 命令里的假阳性。另一个 `ccrSession.ts` 管云端会话这一头：`/ultraplan` 启动时会 teleport 到一个远程会话、把它设成 plan 模式，之后 `ccrSession` 每 3 秒轮询事件流、等你在浏览器里批准一个 `ExitPlanMode`，再把 plan 文本抽出来。也就是说，当时这个功能叫 `ultraplan`，靠关键词触发，干的是"到云端跑一遍 plan 模式、等你点批准、取回一份 plan"。
 
 当前这头（2.1.201）：触发词换成了 `ultracode`，遥测从 `tengu_ultraplan_*` 一族变成了 `tengu_workflow_*` 一族，能力也从"云端出 plan"长成了"一段确定性 JS 脚本铺开 agent 舰队"。关键词触发那套一脉相承地留了下来，而 fan-out 编排的运行时是快照之后才长出来的。触发的骨架来自快照源码，成型的编排来自当前二进制——又一条"没随快照泄露不等于分析不了"的线。
 
@@ -113,7 +117,7 @@ Workflow 真正有意思的地方，不只是"并行快"，而是它把一套追
 
 第二条，从二进制抽字符串和运行时常量。`grep` 全部 `tengu_workflow_*` 和 `tengu_ultraplan_*` 事件名当功能地图；压缩后的运行时代码里还能读到上限常量 `1000`、以及 `workflowRunId` / `resume` / 任务表这套续跑机制的骨架。
 
-第三条，抓 fan-out。源码已表明每个被派生的 agent 是 client 侧发出的独立请求，所以架一个明文反向代理（配方见[第 17 章](17-autonomy-goal-loop.md) 17.5），跑一个很小的 workflow，就能看到一段脚本并发派出去的那几个 subagent 请求。要注意分寸：workflow 会 spawn 大量 agent、很烧 token，探针要限成两三个 agent、只读任务、跑完就停。
+第三条，抓 fan-out。架一个明文反向代理（配方见[第 17 章](17-autonomy-goal-loop.md) 17.5），跑一个很小的 workflow，就能看到一段脚本并发派出去的 subagent 请求。本章就真跑了两个探针。2-agent 并行那个，抓到两个子 agent 的请求时间戳只差 0.01 秒——并发派生坐实，也看到 "You are a subagent spawned by a workflow orchestration script" 的系统提示。带 schema 的那个，看到子 agent 工具集里被注入的 `StructuredOutput` 工具，它的 `input_schema` 就是你传的那份。要注意分寸：workflow 会 spawn 大量 agent、很烧 token，探针要限成两三个 agent、只读任务、跑完就停。
 
 第四条，读快照前身。`utils/ultraplan/` 在 v2.1.88 快照里就有，用来做 ultraplan → dynamic-workflows 的演进对账。
 
@@ -191,4 +195,22 @@ once spent() reaches total, further agent() calls throw.
 - Multi-modal sweep / Completeness critic: "what's missing?" becomes next round.
 ```
 
-> 来源：以上节选自运行时注入的 Workflow 工具描述；`min(16, cpu cores - 2)` / `at most 4096 items` / `capped at 1000` 等句已与 2.1.201 客户端二进制逐字核对。示例与模式细则用 `…` 省略。某次 workflow 的具体脚本、运行时并发调度器内部、以及 `ultracode` 背后的模型档，均不在可见范围内。
+### 子 agent 系统提示与 StructuredOutput 工具（逐字，反代抓包 2.1.202）
+
+一个被 workflow 派生的 subagent，它系统提示的头部：
+
+```text
+You are a subagent spawned by a workflow orchestration script. Use the tools available to complete the task.
+
+CRITICAL: Your final text response is returned **verbatim** as a string to the calling script — it is your return value, not a message to a human. Output the literal result (data, JSON, text). Do NOT output confirmation…
+```
+
+带 `schema` 时，被注入进子 agent 工具集的 `StructuredOutput` 工具（它的 `input_schema` 就是调用方传入的 schema）：
+
+```text
+StructuredOutput — Use this tool to return your final response in the requested
+structured format. You MUST call this tool exactly once at the end of your
+response to provide the structured output.
+```
+
+> 来源：工具描述节选来自运行时注入的 Workflow 工具，`min(16, cpu cores - 2)` / `at most 4096 items` / `capped at 1000` 等句已与 2.1.201 二进制逐字核对；子 agent 系统提示与 `StructuredOutput` 工具来自对 2.1.202 客户端真跑一个探针 workflow 的明文反代抓包。示例与模式细则用 `…` 省略。某次 workflow 的具体脚本、运行时并发调度器内部、以及 `ultracode` 背后的模型档，均不在可见范围内。
