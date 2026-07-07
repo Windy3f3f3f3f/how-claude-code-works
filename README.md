@@ -8,7 +8,7 @@
 [![GitHub forks](https://img.shields.io/github/forks/Windy3f3f3f3f/how-claude-code-works?style=flat-square&logo=github)](https://github.com/Windy3f3f3f3f/how-claude-code-works/fork)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](./LICENSE)
 [![TypeScript](https://img.shields.io/badge/Source-TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://github.com/anthropics/claude-code)
-[![Docs](https://img.shields.io/badge/Docs-18_chapters-orange?style=flat-square)](#专题深入)
+[![Docs](https://img.shields.io/badge/Docs-19_chapters-orange?style=flat-square)](#专题深入)
 
 <br/>
 
@@ -165,6 +165,7 @@ Claude Code 支持三种多 Agent 模式：
 | 16 | [可观测性：Metrics 与 Trace](./docs/16-observability.md) | 一次 prompt 的 EXPLAIN、三观测平面 + transcript 持久层、prompt.id 关联键、OTel metric/event/span 走读、成本核算、权限决策日志、隐私边界 |
 | 17 🔍 | [自治与续跑：`/goal` 与 `/loop`](./docs/17-autonomy-goal-loop.md) | **快照之后·黑盒逆向**：自治的两种范式（守门评估器 vs 自排程闹钟）、`/goal` 评估器的完整系统提示词与 impossible 死循环刹车、`/loop` 解析规则与 cron / ScheduleWakeup 三条执行路径、文末附可复现的逆向方法（静态串 + 明文反代抓包） |
 | 18 🔍 | [Auto Mode：权限进入分类器时代](./docs/18-auto-mode.md) | **快照之后·源码+抓包**：权限从"规则 + 确认框"进化到 ML 分类器逐动作裁决、四个自然语言规则桶、两段式（粗筛→细判）分类器、reasoning-blind"被审者无从辩护"、它怎么听懂"别 push"、刹车与降级；文末附分类器完整系统提示词原文 + 可复现逆向方法 |
+| 19 🔍 | [Dynamic Workflows：确定性脚本编排 agent 舰队](./docs/19-dynamic-workflows.md) | **快照之后·工具描述+strings+抓包**：把第 8 章"模型当协调器"换成确定性 JS 脚本 fan-out 几十上百 subagent；pipeline 无 barrier 的设计、schema 结构化输出、三道上限 + token 预算、worktree 隔离与断点续跑、把可靠性编排进流程的质量范式、ultraplan→ultracode 演进；文末附 Workflow 工具描述逐字节选 |
 
 ## 🎯 谁应该读这个？
 
@@ -210,7 +211,7 @@ Claude Code 支持三种多 Agent 模式：
 
 - [x] **可观测性：Metrics 与 Trace**（[#10](https://github.com/Windy3f3f3f3f/how-claude-code-works/issues/10) 提议）—— Claude Code 自身如何打点：OpenTelemetry 指标/事件导出、成本核算、会话 transcript 作为 turn 级 trace。**已完成 → [第 16 章：可观测性](./docs/16-observability.md)**
 - [x] **自治闭环：`/goal`、`/loop` 与 cron 调度**（v2.1.71 / v2.1.139）—— 设定完成条件后跨 turn 自主工作直到达成；定时/模型自定节奏的循环任务。**已完成 → [第 17 章：自治与续跑](./docs/17-autonomy-goal-loop.md)**（含 `/goal` 评估器与 `/loop` 命令的完整提示词原文 + 可复现逆向方法）
-- [ ] **Dynamic Workflows（触发词 "ultracode"）**（v2.1.154–160）—— 用一段编排脚本在后台指挥几十到几百个 agent，带 token 预算控制、断点续跑与 `/workflows` 监控面板
+- [x] **Dynamic Workflows（触发词 "ultracode"）**（v2.1.154 起）—— 用一段编排脚本在后台指挥几十到几百个 agent，带 token 预算控制、断点续跑与 `/workflows` 监控面板。**已完成 → [第 19 章：Dynamic Workflows](./docs/19-dynamic-workflows.md)**（含 Workflow 工具描述逐字节选 + 可复现逆向方法）
 - [x] **Auto Mode：权限进入分类器时代**（v2.1.152 起免 opt-in）—— 从"规则 + 确认框"到 LLM 分类器实时判断每个动作放行/拦截，并能理解口头边界（如"别 push"）。**已完成 → [第 18 章：Auto Mode](./docs/18-auto-mode.md)**（含分类器完整系统提示词原文 + 四规则桶 + 可复现逆向方法）
 - [ ] **后台 Agent 舰队**（v2.1.139–198）—— `/bg` 后台化、常驻 daemon、`claude agents` 全局面板、会话睡醒机制、完工自动 commit+push+draft PR、子 agent 默认后台运行
 - [ ] **云端多 Agent 审查**（v2.1.111–147）—— `/ultrareview` → `/code-review`：并行多 agent 分析 + 对抗式批判，带档位（low→ultra）与 CI 集成

@@ -6,7 +6,7 @@
 [![GitHub forks](https://img.shields.io/github/forks/Windy3f3f3f3f/how-claude-code-works?style=flat-square&logo=github)](https://github.com/Windy3f3f3f3f/how-claude-code-works/fork)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](./LICENSE)
 [![TypeScript](https://img.shields.io/badge/Source-TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://github.com/anthropics/claude-code)
-[![Docs](https://img.shields.io/badge/Docs-18_chapters-orange?style=flat-square)](#deep-dive-topics)
+[![Docs](https://img.shields.io/badge/Docs-19_chapters-orange?style=flat-square)](#deep-dive-topics)
 
 > Want to build one yourself? Check out the companion project **[Claude Code From Scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch)** — ~3000 lines of TypeScript, 11 step-by-step tutorial chapters, build your own Claude Code from scratch
 
@@ -143,6 +143,7 @@ To prevent conflicts from multiple Agents modifying the same file simultaneously
 | 16 | [Observability: Metrics & Traces](/en/docs/16-observability.md) | The EXPLAIN of a prompt, three observability planes + transcript substrate, the prompt.id join key, an OTel metric/event/span walkthrough, cost accounting, permission decision logging, privacy boundaries |
 | 17 🔍 | [Autonomy & Continuation: `/goal` and `/loop`](/en/docs/17-autonomy-goal-loop.md) | **Post-snapshot · black-box RE**: the two paradigms of autonomy (a gatekeeping evaluator vs a self-scheduling alarm), the `/goal` evaluator's full system prompt and its `impossible` loop-brake, `/loop`'s parsing rules and the cron / ScheduleWakeup execution paths, with a reproducible reverse-engineering method in the appendix |
 | 18 🔍 | [Auto Mode: Permissions Enter the Classifier Era](/en/docs/18-auto-mode.md) | **Post-snapshot · source + capture**: permissions evolve from "rules + confirmation dialogs" to an ML classifier adjudicating each action, four natural-language rule buckets, a two-stage (coarse screen → fine judgment) classifier, the reasoning-blind "the accused can't argue its own case", how it understands "don't push", brakes and degradation; with the classifier's full system prompt and a reproducible RE method in the appendix |
+| 19 🔍 | [Dynamic Workflows: Orchestrating an Agent Fleet with a Script](/en/docs/19-dynamic-workflows.md) | **Post-snapshot · tool description + strings + capture**: replacing Chapter 8's "model as coordinator" with a deterministic JS script that fans out tens to hundreds of subagents; the no-barrier pipeline design, schema-forced structured output, three caps + a token budget, worktree isolation and resume-from-checkpoint, quality patterns that build reliability into the process, the ultraplan→ultracode evolution; with verbatim excerpts of the Workflow tool description in the appendix |
 
 ## Who Should Read This?
 
@@ -188,7 +189,7 @@ Planned topics:
 
 - [x] **Observability: Metrics & Trace** (proposed in [#10](https://github.com/Windy3f3f3f3f/how-claude-code-works/issues/10)) — how Claude Code instruments itself: OpenTelemetry metrics/events export, cost accounting, session transcripts as turn-level traces. **Done → [Chapter 16: Observability](/en/docs/16-observability.md)**
 - [x] **The autonomy loop: `/goal`, `/loop` and cron scheduling** (v2.1.71 / v2.1.139) — set a completion condition and Claude keeps working across turns until it's met; recurring tasks on fixed or model-chosen intervals. **Done → [Chapter 17: Autonomy & Continuation](/en/docs/17-autonomy-goal-loop.md)** (includes the full prompt text of the `/goal` evaluator and the `/loop` command + a reproducible RE method)
-- [ ] **Dynamic Workflows (trigger word "ultracode")** (v2.1.154–160) — an orchestration script that directs tens to hundreds of agents in the background, with token budgets, resumable runs and the `/workflows` panel
+- [x] **Dynamic Workflows (trigger word "ultracode")** (since v2.1.154) — an orchestration script that directs tens to hundreds of agents in the background, with token budgets, resumable runs and the `/workflows` panel. **Done → [Chapter 19: Dynamic Workflows](/en/docs/19-dynamic-workflows.md)** (includes verbatim excerpts of the Workflow tool description + a reproducible RE method)
 - [x] **Auto Mode: permissions enter the classifier era** (opt-in dropped in v2.1.152) — from "rules + confirmation dialogs" to an ML classifier deciding allow/deny per action, honoring spoken boundaries like "don't push". **Done → [Chapter 18: Auto Mode](/en/docs/18-auto-mode.md)** (includes the classifier's full system prompt + the four rule buckets + a reproducible RE method)
 - [ ] **The background agent fleet** (v2.1.139–198) — `/bg`, a resident daemon, the global `claude agents` view, retire→wake lifecycle, auto commit+push+draft-PR on completion, subagents running in the background by default
 - [ ] **Cloud multi-agent review** (v2.1.111–147) — `/ultrareview` → `/code-review`: parallel multi-agent analysis with adversarial critique, effort levels (low→ultra) and CI integration

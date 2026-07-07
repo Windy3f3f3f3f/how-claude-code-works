@@ -32,6 +32,7 @@
 - **Post-Snapshot Features (Black-Box RE)**
   - [17. Autonomy & Continuation: /goal and /loop](/en/docs/17-autonomy-goal-loop.md)
   - [18. Auto Mode: Permissions Enter the Classifier Era](/en/docs/18-auto-mode.md)
+  - [19. Dynamic Workflows: Orchestrating an Agent Fleet with a Script](/en/docs/19-dynamic-workflows.md)
 
 - **Reference**
   - [Quick Reference](/en/docs/reference.md)
