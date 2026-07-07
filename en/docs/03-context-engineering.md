@@ -79,10 +79,10 @@ The three pillars above are somewhat abstract. Let's look at what an actual API 
 │  ┌────────────────────────────────────────────────────────┐  │
 │  │ Built-in tools (Read, Edit, Bash, Grep, Write, Glob…) │  │
 │  │ MCP tools (user-installed, may have defer_loading)     │  │
-│  │ Last tool ← marked with cache_control as breakpoint   │  │
-│  │ ── After breakpoint ──                                 │  │
-│  │ Server-side tools (advisor etc., toggle won't bust     │  │
-│  │ cache)                                                 │  │
+│  │ Server-side tools (advisor etc.) sit at the end        │  │
+│  │ Whole array renders before system, cached along with   │  │
+│  │ the system breakpoint (no per-tool cache_control in    │  │
+│  │ the snapshot — see 3.6)                                 │  │
 │  └────────────────────────────────────────────────────────┘  │
 │                                                               │
 │  messages — Message Array                                     │
@@ -111,7 +111,7 @@ A few key design decisions to note:
 
 - **Memory, skills, and MCP instructions** are NOT in the system prompt — they're injected as `<system-reminder>` attachment messages in the message array. This way they can be injected incrementally and on-demand (only when content changes), without breaking the system prompt cache
 - **CLAUDE.md and date** are "meta information" but placed in the first message (not the system prompt), because CLAUDE.md content varies by project — putting it in the system prompt would reduce cache sharing
-- The **tool schema array** has `cache_control` marked on the last tool, and the server caches everything up to that point. Optional tools like advisor are placed after the breakpoint so toggling them won't affect the cache
+- The **tool schema array** renders before `system` and is cached along with the system static block's breakpoint. The snapshot retains the ability to mark individual tools with `cache_control`, but the main query path never enables it (see 3.6)
 
 The following table summarizes how each component behaves within a session:
 
@@ -771,22 +771,22 @@ Every API request requires the server to compute KV Cache for the input (a funda
 
 Prefix caching works by having the server remember the KV Cache results from the previous request. On the next request, if the prefix is exactly identical, it reuses the previous computation and only processes the new additions. But there's a hard constraint at the transformer architecture level: **the prefix must be byte-for-byte identical to reuse the KV Cache**. Not "close enough" — any single byte of change invalidates all KV Cache from that position onward.
 
-### The Three-Layer Cache Chain: From System Prompt to Conversation Content
+### The Cache Chain: From System Prompt to Conversation Content
 
-Claude Code doesn't just cache the system prompt — it sets cache breakpoints across **all three levels** of the request, forming a complete cache chain:
+Claude Code doesn't just cache the system prompt — it explicitly sets cache breakpoints at two levels, `system` and `messages`, chaining them into a complete cache chain; the tools array, because it renders before `system`, is covered together by the `system` breakpoint:
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
 │  Request N:                                                          │
 │                                                                      │
-│  [system ← cache_control] [tools ← cache_control] [history...       │
-│   ~~~~~~cache hit~~~~~~   ~~~~~~cache hit~~~~~~     msg1 msg2 msg3   │
+│  [system ← cache_control] [tools (covered by system)] [history...    │
+│   ~~~~~~cache hit~~~~~~   ~~~~~~also hit~~~~~~      msg1 msg2 msg3   │
 │                                                     ← cache_control  │
 │                                                                      │
 │  Request N+1:                                                        │
 │                                                                      │
-│  [system ← cache_control] [tools ← cache_control] [history...       │
-│   ~~~~~~cache hit~~~~~~   ~~~~~~cache hit~~~~~~     msg1 msg2 msg3   │
+│  [system ← cache_control] [tools (covered by system)] [history...    │
+│   ~~~~~~cache hit~~~~~~   ~~~~~~also hit~~~~~~      msg1 msg2 msg3   │
 │                                                  ~~~~~~cache hit~~~~~~│
 │                                                       msg4 msg5      │
 │                                                       ← cache_control│
@@ -795,13 +795,13 @@ Claude Code doesn't just cache the system prompt — it sets cache breakpoints a
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-**First breakpoint: system prompt**. `splitSysPromptPrefix()` marks `cache_control` at the static/dynamic boundary of the system prompt, allowing the core instruction portion to be shared across users (see "Splitting Strategy" below).
+**First breakpoint: system prompt**. `splitSysPromptPrefix()` marks `cache_control` at the static/dynamic boundary of the system prompt, allowing the core instruction portion to be shared across users (see "Splitting Strategy" below). The API's render order is `tools → system → messages`, so the breakpoint marked on the system block pulls the entire tools array in front of it into the cached prefix — which is why the tool definitions get cached without needing their own breakpoint.
 
-**Second breakpoint: tool array**. The last regular tool is marked with `cache_control`. The server caches everything up to this point (system prompt + tool definitions). Optional server-side tools (like advisor) are placed after the breakpoint, so toggling them doesn't affect the cache.
+**Second breakpoint: message array**. `addCacheBreakpoints()` marks `cache_control` on the **last message**. This means all historical messages (from the previous turn and before) are within the cached prefix, and each turn only needs to process newly added messages.
 
-**Third breakpoint: message array**. `addCacheBreakpoints()` marks `cache_control` on the **last message**. This means all historical messages (from the previous turn and before) are within the cached prefix, and each turn only needs to process newly added messages.
+> **On the tools-array breakpoint**: `toolToAPISchema` retains the ability to mark `cache_control` on a tool schema (`options.cacheControl`), but in the snapshot we analyzed, no call on the main query path passes it (`claude.ts` there only passes `deferLoading`), and the source comment saying "the tool schema carries the cache marker" describes intent that was never realized. So the breakpoints actually in effect are the two on system and messages, with tools covered by the former. Optional server-side tools (like advisor) sit at the end of the tools array — the design intent was to place a tools breakpoint before them so toggling wouldn't bust the cache; with the tools breakpoint unwired, that protection never took effect in the snapshot.
 
-The three breakpoints chained together achieve **full-pipeline caching**: in a conversation that's been going for 20 turns, turn 21 only needs to process the latest user message and tool results — all the accumulated system + tools + 20 turns of history hit the cache. This is one of the core reasons Claude Code maintains low-latency responses.
+The two breakpoints chained together achieve **full-pipeline caching**: in a conversation that's been going for 20 turns, turn 21 only needs to process the latest user message and tool results — all the accumulated system + tools + 20 turns of history hit the cache. This is one of the core reasons Claude Code maintains low-latency responses.
 
 > **Detail: Cache protection for fire-and-forget requests**. Certain secondary requests (like background auxiliary queries) place the `cache_control` marker on the **second-to-last** message instead of the last. This way, temporary requests don't write their content into the main cache chain, avoiding pollution of subsequent normal conversation's cache prefix.
 
@@ -853,7 +853,7 @@ Both types of latching share a common reset point: **`/clear` and `/compact` com
 
 #### Layer 3: Tool Array and Message Array Arrangement Strategy
 
-**Tool arrangement**: Optional server-side tools (like advisor) are placed **after** the `cache_control` breakpoint, so enabling or disabling `/advisor` only changes the small section after the breakpoint, without affecting the previously cached system prompts and tool definitions. MCP tools use the **deferred loading** (`defer_loading`) mechanism, not appearing in the tool array until Tool Search is invoked — complementing Layer 1's splitting strategy by minimizing cache differences caused by user-specific tools.
+**Tool arrangement**: The design intent is to place optional server-side tools (like advisor) **after** a tools breakpoint, so enabling or disabling `/advisor` only changes the small section after it; but as 3.6 explains, the tools breakpoint is unwired in the snapshot, so this protection never actually took effect. MCP tools use the **deferred loading** (`defer_loading`) mechanism, not appearing in the tool array until Tool Search is invoked — complementing Layer 1's splitting strategy by minimizing cache differences caused by user-specific tools.
 
 **Cached Microcompact's cache awareness**: As mentioned in section 3.4, Microcompact has two paths. When the cache is "warm" (not expired), it **does not directly modify message content** (which would break the entire message prefix cache). Instead, it sends `cache_edits` instructions telling the server to "delete certain tool_result blocks from the cache." This cleans up old content and frees space without requiring the client to re-upload or the server to reprocess the entire prefix — a sophisticated coordination between message-level caching and the compression mechanism.
 
@@ -873,7 +873,7 @@ When a break is detected, the system automatically attributes it to one of three
 
 This detection system forms an **improvement feedback loop**: source code comments reveal that Layer 2's latching mechanisms were developed specifically after the detection system discovered cache breaks caused by header toggling. Detection first, discover the problem, then build the defense — a positive engineering cycle.
 
-> **Summary**: Claude Code's prefix caching is a full-pipeline solution — system, tools, and messages all have cache breakpoints, chained together into a complete cache pipeline. Four layers of defense (splitting, latching, arrangement strategy, break detection) collectively ensure this cache chain's stability. The end result: no matter how many turns the conversation has reached, each request only needs to process the latest incremental content — everything accumulated before is provided for free by the KV Cache.
+> **Summary**: Claude Code's prefix caching is a full-pipeline solution — system and messages carry explicit cache breakpoints, with the tools array cached along with the system breakpoint, chained together into a complete cache pipeline. Four layers of defense (splitting, latching, arrangement strategy, break detection) collectively ensure this cache chain's stability. The end result: no matter how many turns the conversation has reached, each request only needs to process the latest incremental content — everything accumulated before is provided for free by the KV Cache.
 
 ## 3.7 `<system-reminder>` Injection Mechanism
 
