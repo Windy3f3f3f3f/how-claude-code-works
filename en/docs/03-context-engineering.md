@@ -206,13 +206,13 @@ systemPromptSection('toolInstructions', () => buildToolPrompt(...))
 
 // Recomputed every turn, will break prompt cache
 DANGEROUS_uncachedSystemPromptSection(
-  'modelOverride',
-  () => getModelOverrideConfig(),
-  'Live feature flags may change mid-session'  // Must provide a reason
+  'mcp_instructions',
+  () => getMcpInstructionsSection(mcpClients),
+  'MCP servers connect/disconnect between turns'  // Must provide a reason
 )
 ```
 
-The `DANGEROUS_` prefix is intentional code-level warning — it reminds developers: **this section is recomputed every turn, and if the value changes it will break the prompt cache**. Developers must provide a `_reason` parameter explaining why cache breaking is necessary. Most sections are stable (tool descriptions, safety rules), and only a few sections that depend on real-time feature flags need to use the `DANGEROUS_` variant.
+The `DANGEROUS_` prefix is intentional code-level warning — it reminds developers: **this section is recomputed every turn, and if the value changes it will break the prompt cache**. Developers must provide a `_reason` parameter explaining why cache breaking is necessary. Most sections are stable (tool descriptions, safety rules), and only a few sections that depend on runtime state that can change between turns (e.g. MCP servers may connect/disconnect between turns) need to use the `DANGEROUS_` variant.
 
 `clearSystemPromptSections()` is called during `/clear` and `/compact`, simultaneously resetting the beta header latch (see 3.6 Layer 2), giving the next conversation a completely fresh state.
 
@@ -353,9 +353,9 @@ CLAUDE.md files can reference other files using `@` syntax:
 - Circular references are prevented by tracking processed files
 - Only text file extensions are allowed (.md, .txt, etc.), preventing loading of binary files
 
-**Filtering**: `filterInjectedMemoryFiles()` excludes files matching the `.claude-injected-*` pattern — these are programmatically injected by Hooks or the system, not manually written by users
+**Filtering**: `filterInjectedMemoryFiles()`, when the feature flag (`tengu_moth_copse`) is on, drops memory entries of type `AutoMem` / `TeamMem` — these auto-memories are surfaced on demand via attachment messages instead of being injected into the CLAUDE.md context block
 
-**Cache invalidation**: `clearMemoryFileCaches()` clears the cache when the working directory changes; `resetGetMemoryFilesCache()` completely reloads when the `InstructionsLoaded` Hook fires
+**Cache invalidation**: `clearMemoryFileCaches()` clears the cache without firing any hook (used on worktree switches, settings sync); `resetGetMemoryFilesCache()` is called on compaction / `/clear` so that the next `getMemoryFiles()` reloads and fires the `InstructionsLoaded` hook with the corresponding reason
 
 ### Context Injection Order
 
@@ -385,7 +385,7 @@ When the `HISTORY_SNIP` Feature is enabled, it further projects a "trimmed view"
 
 ### Message Normalization (`normalizeMessagesForAPI`)
 
-`normalizeMessagesForAPI()` (`src/utils/messages.ts`, approximately 200 lines) is a critical processing step before messages are sent. It solves a core problem: **the internal message format of Claude Code and the message format required by the API are not fully consistent**.
+`normalizeMessagesForAPI()` (`src/utils/messages.ts`, approximately 380 lines) is a critical processing step before messages are sent. It solves a core problem: **the internal message format of Claude Code and the message format required by the API are not fully consistent**.
 
 ```typescript
 // src/utils/messages.ts
@@ -560,7 +560,7 @@ if (feature('CONTEXT_COLLAPSE') && contextCollapse) {
 
 This can be analogized to a database View: the underlying table (message array) data remains unchanged, but what you see when querying (sending API requests) is a filtered/transformed view. Summaries are stored in an independent collapse store, and `projectView()` overlays the folded view onto the original messages at each loop entry.
 
-Context Collapse commits folds at approximately **90%** context utilization, while Autocompact's trigger threshold is slightly below this (depending on `reservedTokensForSummary`, approximately 83%~90% of total window, see Level 5 threshold calculation). Running both simultaneously would create competition — the source code comments explicitly state *"Autocompact firing at effective-13k (~93% of effective) sits right between collapse's commit-start (90%) and blocking (95%), so it would race collapse and usually win, nuking granular context that collapse was about to save"*. Therefore, **when Context Collapse is enabled and active, Autocompact is suppressed**.
+Measured against the same denominator, `effectiveWindow`: Context Collapse commits folds at approximately **90%** utilization and blocks (spawning a subtask) at approximately **95%**, while Autocompact triggers at approximately **93%** (`effective - 13k`) — landing right between the two, so it competes with collapse and usually wins. Running both simultaneously would create competition — the source code comments explicitly state *"Autocompact firing at effective-13k (~93% of effective) sits right between collapse's commit-start (90%) and blocking (95%), so it would race collapse and usually win, nuking granular context that collapse was about to save"*. Therefore, **when Context Collapse is enabled and active, Autocompact is suppressed**.
 
 #### Level 5: Autocompact
 
@@ -692,13 +692,19 @@ Claude Code maintains fine-grained token budget tracking:
 
 ### Output Token Reservation (by model)
 
-| Model | Default max_output_tokens | Thinking Token Budget |
-|-------|--------------------------|----------------------|
-| Sonnet | 16,000 | 20,000 |
-| Haiku | 4,096 | 10,000 |
-| Opus | 4,096 | 20,000 |
+`getModelMaxOutputTokens()` (`src/utils/context.ts`) returns a default and an upper limit per model:
 
-Can be overridden via the `CLAUDE_CODE_MAX_OUTPUT_TOKENS` environment variable. Newer models use adaptive thinking and don't need a fixed thinking budget.
+| Model | Default max_output_tokens | Upper limit |
+|-------|--------------------------|-------------|
+| Opus 4.6 | 64,000 | 128,000 |
+| Sonnet 4.6 | 32,000 | 128,000 |
+| Opus 4.5 / Sonnet 4.x / Haiku 4 | 32,000 | 64,000 |
+| Opus 4 / 4.1 | 32,000 | 32,000 |
+| Claude 3.7 Sonnet | 32,000 | 64,000 |
+| Claude 3 Sonnet, 3.5 Sonnet/Haiku | 8,192 | 8,192 |
+| Claude 3 Opus / Haiku | 4,096 | 4,096 |
+
+Models that don't match fall back to `MAX_OUTPUT_TOKENS_DEFAULT`; can be overridden via the `CLAUDE_CODE_MAX_OUTPUT_TOKENS` environment variable. The thinking token budget is no longer a fixed table: `getMaxThinkingTokensForModel()` is marked deprecated and simply returns `upperLimit - 1`; newer models use adaptive thinking rather than a strict thinking budget.
 
 ### Token Estimation Algorithm
 
@@ -740,7 +746,7 @@ export function tokenCountWithEstimation(messages: readonly Message[]): number {
 }
 ```
 
-Key insight: Every API response comes with `usage` data (containing input_tokens, output_tokens, cache tokens), which is the precise result calculated on the server side. `tokenCountWithEstimation()` uses this precise value as an anchor, only making rough estimates for new messages after the anchor (usually just a few tool results) (character count × 4/3 as a conservative factor).
+Key insight: Every API response comes with `usage` data (containing input_tokens, output_tokens, cache tokens), which is the precise result calculated on the server side. `tokenCountWithEstimation()` uses this precise value as an anchor, only making rough estimates for new messages after the anchor (usually just a few tool results) (character count ÷ 4, i.e. roughly 4 bytes per token; JSON-like content uses a more conservative ÷ 2 ratio because dense JSON has many single-character tokens).
 
 This is far more precise than relying entirely on client-side estimation (error drops from potentially 30%+ to typically <5%), while requiring no additional API calls.
 
@@ -926,7 +932,7 @@ using pendingMemoryPrefetch = startRelevantMemoryPrefetch(
 
 Workflow:
 1. **Launch condition**: `isAutoMemoryEnabled()` is true and relevant feature flags are active
-2. **Parallel execution**: Runs in parallel during the `callModel()` streaming call, searching the `~/.claude/memory/` directory for memory files relevant to the current conversation
+2. **Parallel execution**: Runs in parallel during the `callModel()` streaming call, searching this project's auto-memory directory `~/.claude/projects/<escaped-project-path>/memory/` (shared by all worktrees of the same git repo; can be overridden via settings/env) for memory files relevant to the current conversation
 3. **Single consumption**: The `settledAt` guard ensures only one consumption per turn. If the query loop retries due to PTL recovery, prefetch results won't be injected again
 4. **Deduplication**: `readFileState` tracks already-read files, preventing the same memory file from being injected multiple times in the same session
 5. **Injection timing**: Prefetch results are injected as attachment messages (`AttachmentMessage`) after tool execution, appearing in the context of the next round's API call
@@ -938,19 +944,24 @@ When a Prompt-Too-Long (PTL) error occurs, reactive compression triggers as the 
 
 ```typescript
 // src/query.ts — Second phase of PTL recovery
-tryReactiveCompact() {
-  // Calls compactConversation() with urgent=true
-  // In urgent mode:
-  //   - Uses more aggressive compression strategy
-  //   - May use a faster (smaller) model to generate the summary
-  //   - Does not perform session memory compression (too slow)
-  compactConversation({ urgent: true })
+// reactiveCompact is a feature('REACTIVE_COMPACT')-gated require;
+// its implementation lives in services/compact/reactiveCompact.ts (absent from this source snapshot)
+if ((isWithheld413 || isWithheldMedia) && reactiveCompact) {
+  const compacted = await reactiveCompact.tryReactiveCompact({
+    hasAttempted: hasAttemptedReactiveCompact,
+    querySource,
+    aborted: toolUseContext.abortController.signal.aborted,
+    messages: messagesForQuery,
+    cacheSafeParams: {
+      systemPrompt, userContext, systemContext,
+      toolUseContext, forkContextMessages: messagesForQuery,
+    },
+  })
 
-  // Build post-compression messages
-  buildPostCompactMessages(...)
-
-  // Continue the loop
-  state.transition = 'reactive_compact_retry'
+  if (compacted) {
+    // Build post-compression messages, continue the loop
+    state.transition = { reason: 'reactive_compact_retry' }
+  }
 }
 ```
 
@@ -961,7 +972,7 @@ During normal operation, autocompact should proactively trigger when context uti
 
 > **Design Decision: How are compression thresholds determined?**
 >
-> The auto-compression trigger formula is `tokens >= effectiveContextWindow - AUTOCOMPACT_BUFFER_TOKENS`, where `AUTOCOMPACT_BUFFER_TOKENS = 13,000` (`src/services/compact/autoCompact.ts`). `effectiveContextWindow` itself = `contextWindow - Math.min(getMaxOutputTokensForModel(model), 20_000)`, i.e., it deducts the output reservation for compression summaries (`MAX_OUTPUT_TOKENS_FOR_SUMMARY = 20,000`, based on p99.99 compression summary output of 17,387 tokens). For a 200K context window, the threshold is approximately **92.8%** relative to effectiveWindow (167K/180K), and approximately **83.5%~89.5%** relative to total window (depending on whether `reservedTokensForSummary` is 20K or 8K). The 13K buffer ensures there's still enough space to complete the current tool execution and generate the summary when compression triggers. Related to this is `WARNING_THRESHOLD_BUFFER_TOKENS = 20,000` — warnings start appearing to the user 7K tokens before compression.
+> The auto-compression trigger formula is `tokens >= effectiveContextWindow - AUTOCOMPACT_BUFFER_TOKENS`, where `AUTOCOMPACT_BUFFER_TOKENS = 13,000` (`src/services/compact/autoCompact.ts`). `effectiveContextWindow` itself = `contextWindow - Math.min(getMaxOutputTokensForModel(model), 20_000)`, i.e., it deducts the output reservation for compression summaries (`MAX_OUTPUT_TOKENS_FOR_SUMMARY = 20,000`, based on p99.99 compression summary output of 17,387 tokens). For a 200K context window, the threshold is approximately **92.8%** relative to effectiveWindow (167K/180K), and approximately **83.5%~89.5%** relative to total window (depending on whether `reservedTokensForSummary` is 20K or 8K). The 13K buffer ensures there's still enough space to complete the current tool execution and generate the summary when compression triggers. Related to this is `WARNING_THRESHOLD_BUFFER_TOKENS = 20,000` — the warning threshold = autocompact threshold − 20,000, i.e. warnings start appearing to the user 20K tokens before auto-compression triggers (when autocompact is disabled, it's 20K below `effectiveWindow` instead).
 
 > **Design Decision: Why does max_output_tokens default to only 8K instead of 32K?**
 >
@@ -993,7 +1004,7 @@ Claude Code has a built-in five-level compression pipeline that automatically tr
 
 **4. Keep MCP tool installations minimal**
 
-This is something many users don't realize: **as soon as you have any MCP tool installed**, the entire system prompt cache degrades from `global` (shared worldwide) to `org` (shared within organization). This means you can't benefit from the system prompt cache shared by millions of users worldwide — every cold start requires independent computation.
+This is something many users don't realize: **as soon as an MCP tool actually renders into the tool array (not deferred via `defer_loading`)**, the entire system prompt cache degrades from `global` (shared worldwide) to `org` (shared within organization). This means you can't benefit from the system prompt cache shared by millions of users worldwide — every cold start requires independent computation. (MCP tools that are deferred by Tool Search do not trigger the downgrade — see 3.6.)
 
 > Practical tip: Only install MCP servers you're actively using. If an MCP server is only needed occasionally, consider removing it when done. Fewer MCP tools = better cache efficiency.
 

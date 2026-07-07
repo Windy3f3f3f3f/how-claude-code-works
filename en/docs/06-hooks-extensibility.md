@@ -134,7 +134,7 @@ The structure is straightforward: the `hooks` object's keys are event names (e.g
 
 **How it works (`execCommandHook`):**
 
-1. **Process creation**: Calls `spawn()` to create a child process. The shell selection logic is: if `shell: 'powershell'` is specified, use `pwsh`; otherwise use the user's `$SHELL` (bash/zsh/sh).
+1. **Process creation**: Calls `spawn()` to create a child process. The shell selection logic is: if `shell: 'powershell'` is specified, use `pwsh` (`-NoProfile -NonInteractive`); otherwise run `spawn(cmd, [], { shell: true })` — which is `/bin/sh` on Unix and Git Bash (`findGitBashPath()`) on Windows, **not** the user's `$SHELL` (the "$SHELL" wording in the schema description does not match the actual spawn implementation).
 2. **Input passing**: Serializes the Hook's structured input (including session_id, tool_name, tool_input, etc.) as JSON, passing it to the child process via **stdin**. This means Hook scripts can get full context information by reading stdin.
 3. **Environment variables**: The child process inherits current environment variables. For plugin Hooks, `CLAUDE_PLUGIN_ROOT` (plugin root directory) and `CLAUDE_PLUGIN_DATA` (plugin data directory) are additionally injected, and `${CLAUDE_PLUGIN_ROOT}` placeholders in commands are also replaced.
 4. **Output collection**: Waits for process exit, collects stdout and stderr.
@@ -241,13 +241,17 @@ Programmatic functions that execute directly within the process, without going t
 }
 ```
 
-**Why are Callback Hooks extremely fast?** Claude Code has an important fast path optimization in `executeHooks`:
+**Why are Callback Hooks extremely fast?** Claude Code has a fast path optimization in `executeHooks` targeting internal Hooks:
 
 ```typescript
 // src/utils/hooks.ts
-// If all matching Hooks are callback/function type (no need to spawn external processes)
-if (matchedHooks.every(m => m.hook.type === 'callback' || m.hook.type === 'function')) {
-  // Fast path: skip JSON serialization, AbortSignal creation, progress events, result processing
+// isInternalHook(h): h.hook.type === 'callback' && h.hook.internal === true
+// As soon as any non-internal Hook is present (a regular callback, function,
+// command…), userHooks.length > 0, and execution takes the regular path.
+const userHooks = matchingHooks.filter(h => !isInternalHook(h))
+if (userHooks.length === 0) {
+  // Fast path: every matching Hook is an internal: true callback,
+  // skip JSON serialization, AbortSignal creation, progress events, result processing
   for (const [i, { hook }] of matchingHooks.entries()) {
     if (hook.type === 'callback') {
       await hook.callback(hookInput, toolUseID, signal, i, context)
@@ -257,7 +261,7 @@ if (matchedHooks.every(m => m.hook.type === 'callback' || m.hook.type === 'funct
 }
 ```
 
-This optimization reduces internal Hook overhead from ~6µs to ~1.8µs (-70%). Internal Hooks (such as file access tracking, commit attribution) trigger on every tool call, and the cumulative difference is significant.
+This optimization reduces internal Hook overhead from ~6µs to ~1.8µs (-70%). Note the fast path only fires when **every matching Hook is an `internal: true` callback** (built-in probes like file access tracking and commit attribution) — these trigger on every tool call, so the cumulative difference is significant. A single ordinary (non-internal) SDK callback or function Hook is enough to send the whole batch down the regular path.
 
 ### 7. Function Hook — Session-Scoped Only
 
@@ -280,7 +284,7 @@ Similar to Callback, but scoped to a specific session, preventing cross-Agent le
 
 Several fields appear across multiple Hook types and deserve separate explanation:
 
-**`if` condition**: This is a more granular filter than `matcher`. Matcher matches tool names (e.g., "Bash"), while `if` uses permission rule syntax to match the tool's specific input (e.g., `"Bash(git *)"` — only triggers when the Bash tool executes a git command). The `if` condition is parsed in `prepareIfConditionMatcher`: it calls the tool's `preparePermissionMatcher` to perform pattern matching on tool input, reusing the permission system's matching engine. **`if` only applies to tool-related events** (PreToolUse, PostToolUse, PostToolUseFailure, PermissionRequest) and has no effect on other events.
+**`if` condition**: This is a more granular filter than `matcher`. Matcher matches tool names (e.g., "Bash"), while `if` uses permission rule syntax to match the tool's specific input (e.g., `"Bash(git *)"` — only triggers when the Bash tool executes a git command). The `if` condition is parsed in `prepareIfConditionMatcher`: it calls the tool's `preparePermissionMatcher` to perform pattern matching on tool input, reusing the permission system's matching engine. **`if` can only be evaluated on tool-related events** (PreToolUse, PostToolUse, PostToolUseFailure, PermissionRequest); on other events, a Hook carrying an `if` condition is dropped outright by the `ifFilteredHooks` filter and never runs (in the source, when `ifMatcher` is `undefined` it returns `false`) — rather than the `if` being ignored while the Hook still fires.
 
 **`once` field**: If true, the Hook is automatically removed from configuration after one execution. Suitable for one-time initialization or verification.
 
@@ -557,7 +561,7 @@ If an event triggers 5 Command Hooks, hookInput is `jsonStringify`-ed only once.
 
 **Synchronous mode (default)**: Waits for the process to exit, collects stdout/stderr, and parses the output. While multiple Hooks run in parallel with each other, each individual Hook synchronously awaits its result.
 
-**Asynchronous mode (`async: true`)**: The Hook process runs in the background, is registered to the global `AsyncHookRegistry` via `registerPendingAsyncHook()`, and immediately returns success. The Agent Loop calls `checkForAsyncHookResponses()` on each iteration to poll for completed async Hooks and injects the results into the conversation. Default timeout is 15 seconds (overridable via `asyncTimeout`).
+**Asynchronous mode (`async: true`)**: The Hook process runs in the background, is registered to the global `AsyncHookRegistry` via `registerPendingAsyncHook()`, and immediately returns success. The Agent Loop calls `checkForAsyncHookResponses()` on each iteration to poll for completed async Hooks and injects the results into the conversation. **Two timeout paths must be distinguished**: a Hook configured with `async: true` inherits its own `timeout` field for the background bound (`hook.timeout*1000`, falling back to `TOOL_HOOK_EXECUTION_TIMEOUT_MS` = 10 minutes), passed at backgrounding time as `asyncTimeout: hookTimeoutMs`; the 15-second fallback in `AsyncHookRegistry`'s `|| 15000` only kicks in when a Hook self-declares async by printing `{"async": true}` on stdout **without** an `asyncTimeout`.
 
 **Async rewake mode (`asyncRewake: true`)**: The most special mode, designed specifically for "background check + on-demand interrupt" scenarios:
 
@@ -599,10 +603,12 @@ For Command Hooks with non-JSON output, the exit code is the only communication 
 
 | Exit Code | Meaning | Impact on User | Impact on Model |
 |-----------|---------|---------------|-----------------|
-| **0** | Success | stdout displayed in transcript | No impact |
+| **0** | Success | stdout displayed in transcript | Usually no impact; SessionStart / UserPromptSubmit are the exception (see below) |
 | **1** | General error | stderr displayed to user | **Not** passed to model |
 | **2** | Blocking error | stderr displayed to user | stderr passed to model (blocks operation) |
 | **Other** | General error (same as 1) | stderr displayed to user | Not passed to model |
+
+> **One exception for exit code 0**: for the SessionStart and UserPromptSubmit events, when exit code is 0 and stdout is non-empty, Claude Code wraps the stdout in a `<system-reminder>` (`${hookName} hook success: ...`) and injects it into the conversation, making it visible to the model (the `hook_success` branch in `utils/messages.ts`) — this is the idiomatic way to inject context "with plain `echo`, without writing JSON". For all other events, exit-code-0 stdout only goes into the transcript, not the model's context.
 
 **The key difference between exit codes 1 and 2** is worth emphasizing: exit code 1 simply "tells the user something went wrong" (non-blocking), and the model neither knows nor cares; exit code 2 "tells the model there is a problem that must be handled" (blocking), preventing the current tool execution or the model from stopping.
 
@@ -673,10 +679,13 @@ Aggregation is performed in a streaming fashion via `for await ... of all(hookPr
 | Prompt Hook | 30 seconds | Hardcoded |
 | Agent Hook | 60 seconds | Hardcoded |
 | HTTP Hook | 10 minutes | `DEFAULT_HTTP_HOOK_TIMEOUT_MS` |
-| Async Hook default | 15 seconds | `asyncTimeout` or default value |
+| Config-based `async: true` Hook | The Hook's `timeout` (default 10 minutes) | passed at backgrounding as `asyncTimeout: hookTimeoutMs` |
+| stdout self-declared async without `asyncTimeout` | 15 seconds | `AsyncHookRegistry`'s `|| 15000` fallback |
 | Custom | Configurable | `timeout` field in Hook definition (seconds) |
 
 The SessionEnd timeout is extremely short (1.5 seconds) because the user is exiting and should not be blocked by a Hook. It can be overridden via the environment variable `CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS`.
+
+> `asyncTimeout` is a field of the Hook's JSON output protocol (declared by the Hook on stdout), not a `settings.json`-configurable option — the only async-related settings fields are `timeout` / `async` / `asyncRewake`.
 
 ## 7.5 Hook JSON Output Schema
 
@@ -843,7 +852,7 @@ Taking a PreToolUse Hook that denies an `rm -rf` command as an example, tracing 
    └── if: "Bash(rm *)" → preparePermissionMatcher("rm -rf /tmp/data") → matches "rm *" ✓
    │
 5. execCommandHook() executes the Hook command
-   ├── spawn("bash", ["-c", "echo '{...}'"])
+   ├── spawn(cmd, [], { shell: true })  // /bin/sh on Unix, Git Bash on Windows
    ├── writes JSON input to stdin
    └── waits for exit
    │
@@ -949,14 +958,14 @@ PermissionRequest Hook goes far beyond simple allow/deny:
 
 ### Racing with the Permission System
 
-PermissionRequest Hook participates in the [permission system's racing mechanism](/en/docs/11-permission-security.md) — running concurrently with the UI confirmation dialog and ML classifier, with the first to complete winning.
+PermissionRequest Hook participates in the [permission system's racing mechanism](/en/docs/11-permission-security.md) — running concurrently with the UI confirmation dialog and LLM classifier, with the first to complete winning.
 
 ```mermaid
 sequenceDiagram
     participant Tool as Tool Invocation
     participant Hook as PermissionRequest Hook
     participant UI as UI Confirmation Dialog
-    participant ML as ML Classifier
+    participant ML as LLM Classifier
     participant Guard as ResolveOnce Guard
 
     Tool->>Hook: Input parameters
@@ -1209,7 +1218,7 @@ Traditional Hook systems are either synchronously blocking (slow) or asynchronou
 The Hook system has three layers of optimization on the hot path:
 - **hasHookForEvent**: Most events have no Hook configuration, enabling fast short-circuit returns
 - **matcher/if pre-filtering**: Non-matching Hooks don't spawn processes
-- **Callback fast path**: When all Hooks are callbacks, JSON serialization and progress events are skipped (-70% overhead), because internal Hooks (file access tracking, commit attribution) trigger on every tool call
+- **Callback fast path**: When the matching set is entirely `internal: true` callbacks, JSON serialization and progress events are skipped (-70% overhead), because these internal Hooks (file access tracking, commit attribution) trigger on every tool call
 
 ### 5. Security Design Follows the "All-or-Nothing" Principle
 

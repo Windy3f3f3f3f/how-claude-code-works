@@ -476,7 +476,7 @@ Worktree 创建过程（`src/utils/worktree.ts`）：
 2. **创建**：在 `.claude/worktrees/<slug>/` 下创建，对大目录（如 `node_modules`）使用符号链接避免磁盘占用
 3. **清理**：任务完成后，如果 worktree 无任何文件变更（通过 `git diff` 检测），自动删除；有变更时返回路径和分支名，由用户决定是否合并
 
-**远程隔离**：在远程 CCR（Cross-Continent Runtime）环境中执行，通过 WebSocket 流式传输消息，适用于需要完全隔离的沙盒环境。远程隔离始终以异步模式运行。
+**远程隔离**：在远程 CCR（Claude Code Remote，Anthropic 云端远程会话）环境中执行，通过 WebSocket 流式传输消息，适用于需要完全隔离的沙盒环境。远程隔离始终以异步模式运行。
 
 ### Fork 子 Agent
 
@@ -609,7 +609,7 @@ export const FORK_AGENT = {
 | `TaskStop` | 终止 Worker（方向错误时的止损） |
 | `subscribe_pr_activity` | 订阅 GitHub PR 事件（若可用） |
 
-协调器**不能**使用 Bash、Edit、Read 等工具——这确保它只做编排，不做执行。内部工具（TeamCreate, TeamDelete, SendMessage, SyntheticOutput）从主线程中排除。
+协调器**不能**使用 Bash、Edit、Read 等工具——这确保它只做编排，不做执行。而 `INTERNAL_WORKER_TOOLS`（TeamCreate、TeamDelete、SendMessage、SyntheticOutput）则会从"呈现给协调器、用于描述 Worker 可用工具的那份清单"中剔除——它们是协调器/Leader 内部编排用的，不该出现在给 Worker 的能力说明里（四者中真正落在 Worker 工具集内、会被实际过滤掉的只有 SyntheticOutput，其余三个本就不在集合中，属防御性过滤）。
 
 **为什么协调器不能执行？** 这不仅仅是分工问题——如果协调器既做决策又做执行，它会倾向于"自己动手比委托更快"，从而退化为一个普通的单 Agent。工具集的硬限制强制它必须通过 Worker 完成所有实际操作，这保证了任务分配的客观性和并行化。
 
@@ -983,25 +983,13 @@ flowchart TB
 
 ### 权限剥离与恢复
 
-进入 Plan 模式时，系统执行精细的权限管理：
+进入 Plan 模式时，`prepareContextForPlanMode`（`src/utils/permissions/permissionSetup.ts`）会做一层精细的权限管理。它的真实语义和常见直觉有出入，有三点值得说清楚：
 
-```typescript
-// src/utils/permissions/permissionSetup.ts
-function prepareContextForPlanMode(context: ToolPermissionContext) {
-  // 1. 记住进入 Plan 前的权限模式（如 default/auto）
-  //    退出时恢复到这个模式
-  context.prePlanMode = context.mode
+1. **只记旧模式、不在函数内切 plan**：它把进入 Plan 前的权限模式（如 `default`/`auto`）记到 `prePlanMode`，供退出时恢复，并返回一个新的 context；函数体内**从不**设置 `mode = 'plan'`。真正切到 plan 模式是在调用方 `EnterPlanModeTool` 里，通过 `applyPermissionUpdate({ type: 'setMode', mode: 'plan' })` 完成的。
 
-  // 2. 如果从 auto 模式进入，剥离危险权限
-  //    防止自动分类器在探索阶段批准写入操作
-  if (context.mode === 'auto') {
-    stripDangerousPermissionsForAutoMode(context)
-  }
+2. **危险权限的处置挂在"plan 里是否启用 auto"上，而不是"从 auto 进入就剥离"**：从 `auto` 模式进入时，如果 plan-auto（`shouldPlanUseAutoMode()`）开启，就保持 auto、**不剥离**；如果关闭，则调用 `restoreDangerousPermissions()`——是**恢复**而非剥离。真正调用 `stripDangerousPermissionsForAutoMode()` 去剥离危险权限的，是"当前**非** auto、且 plan-auto 开启"那条分支，目的是别让自动分类器在探索阶段批准写入操作。
 
-  // 3. 切换到 plan 模式
-  context.mode = 'plan'
-}
-```
+3. 以上整套逻辑受 `TRANSCRIPT_CLASSIFIER` feature gate 控制；gate 未启用时，函数只记下 `prePlanMode` 后把 context 原样返回。
 
 **被剥离的"危险权限"包括**：Bash 工具级别的 allow 规则、脚本解释器前缀（`python:*`、`node:*` 等）、Agent 通配符（`agent(*)`）。这些权限在用户审批计划后自动恢复。
 

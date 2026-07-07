@@ -295,7 +295,7 @@ The accompanying Token cache system further optimizes non-streaming scenarios (s
 
 The Spinner is more than just a "loading" indicator — it encodes the system's running state through visual changes:
 
-**Spinning characters** (`src/components/Spinner/SpinnerGlyph.tsx`): Uses a set of Unicode Braille characters (e.g., `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`) cycling forward, then cycling backward, creating a smooth back-and-forth spinning effect.
+**Spinning characters** (`src/components/Spinner/SpinnerGlyph.tsx`): Uses a set of star-growth glyphs (`· ✢ ✳ ✶ ✻ ✽`, varying slightly by platform) cycling forward, then cycling backward, creating a smooth back-and-forth spinning effect.
 
 **Stall indication** (`stalledIntensity`): When the model hasn't produced new Tokens for a certain time and there are no active tool calls, `stalledIntensity` gradually increases from 0 to 1. This drives a **smooth RGB interpolation** from the theme color to `ERROR_RED {r:171, g:43, b:63}`:
 
@@ -419,7 +419,7 @@ The backoff strategy uses **exponential backoff + random jitter**:
 | ... | ... | |
 | 7th+ | 32s | Capped at upper limit |
 
-Each delay has an additional ±25% random jitter to prevent multiple clients from retrying at the same moment, causing a "thundering herd" effect. If the API response includes a `retry-after` header, that value is used directly instead of the calculated value.
+Each delay has an additional 0 to +25% random jitter (increase only, never decrease) to prevent multiple clients from retrying at the same moment, causing a "thundering herd" effect. If the API response includes a `retry-after` header, that value is used directly instead of the calculated value.
 
 ### Foreground vs Background Queries: Avoiding Cascade Amplification
 This is one of the most elegant designs in the retry system: **not all queries are worth retrying**.
@@ -544,47 +544,43 @@ Claude Code supports user-defined shortcuts, with the configuration file located
 {
   "bindings": [
     {
-      "key": "ctrl+s",
-      "command": "submit",          // Use Ctrl+S instead of Enter to submit
-      "when": "inputFocused"
-    },
-    {
-      "key": "ctrl+k ctrl+s",       // Chord shortcut
-      "command": "settings"
+      "context": "Chat",              // context (enum); this block only applies when the chat input is focused
+      "bindings": {
+        "ctrl+s": "chat:submit",       // Use Ctrl+S to submit
+        "ctrl+k ctrl+s": "command:config"  // Chord shortcut, runs /config
+      }
     }
   ]
 }
 ```
 
+The top level is a `bindings` array; each element is a `{ context, bindings }` block: `context` is an enum value (`Global`/`Chat`/`Confirmation`, etc.), and `bindings` maps keystroke sequences to actions, where an action is either a dotted identifier (like `chat:submit`, `app:interrupt`) or a `command:xxx` form (which runs the corresponding slash command).
+
 The key binding system supports three key features:
 
 - **Chord Shortcuts**: Multi-key combinations, such as `ctrl+k ctrl+s`, which require pressing two key groups in sequence to trigger. This borrows from VS Code's design. In terminal environments, the available key combinations are far fewer than in GUI applications (many combinations are occupied by the terminal emulator or shell), and the chord mechanism expands the available shortcut space through sequential combinations.
-- **Context Conditions (`when`)**: The `when` field restricts the scope in which a shortcut takes effect, such as `inputFocused` (when the input box is focused), `permissionDialogOpen` (when the permission dialog is open), etc.
+- **Context Conditions (`context`)**: The `context` field restricts the scope in which a shortcut takes effect; its value is an enum, such as `Chat` (when the chat input is focused) or `Confirmation` (when a confirmation/permission dialog is shown), while `Global` applies everywhere.
 - **Extended Key Codes**: Thanks to the Kitty keyboard protocol, Claude Code can distinguish key combinations that traditional terminals cannot differentiate (e.g., Ctrl+Shift+A vs Ctrl+A), providing more granular shortcut support.
 
 ## 14.7 Vim Mode
 
 `src/vim/` implements Vim key bindings for terminal input (approximately 40KB total), allowing users accustomed to Vim to use familiar editing modes in Claude Code's input box.
 
-### Four-Mode State Machine
+### Two-Mode State Machine
 
-Vim mode implements a complete four-mode state machine, with transitions between modes via specific keys:
+Vim mode implements a two-mode (NORMAL / INSERT) state machine, with transitions between modes via specific keys:
 
 ```mermaid
 stateDiagram-v2
     [*] --> Normal
     Normal --> Insert: i, a, o, A, I, O
     Insert --> Normal: Escape
-    Normal --> Visual: v, V
-    Visual --> Normal: Escape
-    Normal --> Command: :
-    Command --> Normal: Escape, Enter
 ```
 
 - **Normal Mode**: Default mode, for navigation and operator combinations
 - **Insert Mode**: Text input mode, behaves identically to a regular editor
-- **Visual Mode**: Text selection mode, supports character selection (`v`) and line selection (`V`)
-- **Command Mode**: Command-line mode, entered via `:`
+
+Claude Code's Vim subset does not include Visual or Command modes — selection and edits are all done through NORMAL-mode combinations of operator + motion + text object (e.g., `diw`, `ci"`), with no separate selection mode or command-line mode to enter.
 
 ### operators.ts (16KB) — Operators
 
@@ -670,17 +666,17 @@ The handling during terminal resize is also noteworthy: rather than clearing the
 
 ### The 200ms Accidental-Press Prevention for Permission Confirmation
 
-The 200ms accidental-press prevention in `PermissionRequest` is not a "nice to have" — it is a **safety-critical design**.
+After `PermissionRequest` appears, the first 200ms is a grace period (`GRACE_PERIOD_MS = 200` in `interactiveHandler.ts`) during which user interactions are **ignored**.
 
-Scenario: the user is rapidly typing a message. The Agent decides to execute a Bash command at this moment and pops up a permission confirmation dialog. If the dialog immediately responds to key presses upon appearing, the user's next Enter (intended as a newline or message submission) would be interpreted as "Allow" — accidentally approving an operation that could modify the filesystem.
+Scenario: the user is rapidly typing a message. The Agent decides to execute a Bash command at this moment and pops up a permission confirmation dialog. Meanwhile the safety classifier may be deciding in the background whether the operation can be auto-approved. If the dialog started responding to key presses the instant it appears, the keystrokes still in flight from the user (meant to keep typing) would be read as "the user has intervened," which would **prematurely cancel** the classifier / auto-approve that is still running. The grace period fixes this: any interaction within 200ms of the popup does not count (it does not set `userInteracted` or clear the classifier indicator); input is only accepted after that window passes.
 
-The 200ms design rationale: the inter-keystroke interval during fast human typing is typically 50-150ms. A 200ms delay ensures the user has stopped their typing action (visually noticed the popup appearing) before input is accepted. This value cannot be too long (otherwise it impacts users who want to confirm quickly) nor too short (otherwise it fails to prevent accidental presses).
+The 200ms design rationale: the inter-keystroke interval during fast human typing is typically 50-150ms. A 200ms delay ensures the user has stopped their typing action (visually noticed the popup appearing) before input is accepted. This value cannot be too long (otherwise it impacts users who want to confirm quickly) nor too short (otherwise it fails to catch accidental presses).
 
 ### Session Recovery
 
 Claude Code has complete session recovery capabilities, ensuring that unexpected interruptions do not lose work progress:
 
-- **Conversation history persistence**: Conversation records are saved in `~/.claude/history.jsonl`, written in real-time with each interaction turn
+- **History persistence**: User input history is saved in `~/.claude/history.jsonl` (global, shared across all projects, for Up-arrow and Ctrl+R search); the full conversation transcript is instead stored per session as `<sessionId>.jsonl`, and resume/recovery reads the latter, not history.jsonl
 - **Resume from breakpoint**: Upon restart, if an incomplete session is detected, the user is prompted whether to resume
 - **Worktree state preservation**: If a sub-Agent was working in a Git Worktree when interrupted, that Worktree is preserved. After resuming the session, execution can continue from the breakpoint
 

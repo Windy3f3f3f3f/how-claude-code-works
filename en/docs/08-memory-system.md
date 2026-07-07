@@ -59,9 +59,10 @@ graph TD
 The definition of the feedback type in the source code `memoryTypes.ts` reveals a subtle design decision — feedback records not only user corrections but also user affirmations:
 
 ```
-Guidance or correction the user has given you. These are a very important
-type of memory to read and write as they allow you to remain coherent and
-responsive to the way you should approach work in the project.
+Guidance the user has given you about how to approach work — both what to
+avoid and what to keep doing. These are a very important type of memory to
+read and write as they allow you to remain coherent and responsive to the
+way you should approach work in the project.
 ```
 
 Why record both successes and failures? There's a key explanation in the source code comments (paraphrased):
@@ -148,7 +149,7 @@ The memory directory location is determined through a three-level priority chain
 
 **Security Decision: Why is projectSettings Excluded?**
 
-`getAutoMemPathSetting()` only reads from user/managed settings, **not** from projectSettings. The reason is security: projectSettings comes from the project's `.claude/settings.json` file, which is checked into the code repository. A malicious repository could set `autoMemoryDirectory: "~/.ssh"`, allowing Claude Code's memory write operations (Edit/Write tools) to gain write access to the user's SSH key directory. This is consistent with the principle in the permission system of "not trusting project-level settings for security-sensitive paths."
+`getAutoMemPathSetting()` reads from four trusted sources in order — policy / flag / local / user settings — and **excludes only** projectSettings. The reason is security: projectSettings comes from the project's `.claude/settings.json` file, which is checked into the code repository. A malicious repository could set `autoMemoryDirectory: "~/.ssh"`, allowing Claude Code's memory write operations (Edit/Write tools) to gain write access to the user's SSH key directory. This is consistent with the principle in the permission system of "not trusting project-level settings for security-sensitive paths."
 
 ### Storage Format
 
@@ -371,7 +372,7 @@ The prompt explicitly distinguishes these two cases: "do not select usage refere
 
 Memory recall is implemented through `pendingMemoryPrefetch` as **asynchronous prefetch** — while the model starts generating a response, Sonnet is queried in the background via `sideQuery()`. When the model actually needs the memories, the results are usually ready.
 
-This design ensures the ~250ms latency of memory recall doesn't add to the user-perceived response time. For the user, memory recall is "free."
+This design ensures the latency of memory recall (one Sonnet `sideQuery` round-trip) doesn't add to the user-perceived response time. For the user, memory recall is "free."
 
 ## 6.6 Memory Freshness and Drift Defense
 
@@ -669,7 +670,7 @@ The `isMeta: true` flag ensures these messages are not displayed as user message
 
 1. **Only memorize non-derivable information**: Code patterns are read from code, git history is queried from git, memory only stores "meta-information" — this constraint is the foundation of the entire system, preventing memory from becoming an outdated code map
 
-2. **Semantic recall outperforms keyword matching**: Using Sonnet to evaluate relevance can understand the semantic association between "deployment" and "CI/CD." The cost is ~250ms additional latency, but it's completely hidden through asynchronous prefetch
+2. **Semantic recall outperforms keyword matching**: Using Sonnet to evaluate relevance can understand the semantic association between "deployment" and "CI/CD." The cost is the additional latency of one Sonnet `sideQuery`, but it's completely hidden through asynchronous prefetch
 
 3. **Dual-layer truncation defends against long indexes**: Line truncation catches normal growth, byte truncation catches anomalously long lines (actually observed 197KB within 200 lines) — designed for real-world data, not theoretical scenarios
 

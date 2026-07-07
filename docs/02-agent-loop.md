@@ -48,15 +48,15 @@ graph TB
 
 `src/QueryEngine.ts`（1,295 行）是对话的外壳。它的核心方法 `submitMessage()` 驱动一次完整的用户交互。
 
-### 完整配置参数
+### 核心配置参数（节选）
 
-QueryEngine 通过 `QueryEngineConfig` 接收所有配置：
+QueryEngine 通过 `QueryEngineConfig` 接收配置，核心字段如下：
 
 ```typescript
 // src/QueryEngine.ts
 export type QueryEngineConfig = {
   cwd: string                          // 工具执行的工作目录
-  tools: Tools                         // 可用工具集（66+ 内置工具）
+  tools: Tools                         // 可用工具集（40+ 内置工具）
   commands: Command[]                  // 斜杠命令（/compact, /memory, /clear 等）
   mcpClients: MCPServerConnection[]    // 活跃的 MCP 服务端连接
   agents: AgentDefinition[]            // 自定义 Agent 定义（来自 .claude/agents/）
@@ -79,13 +79,15 @@ export type QueryEngineConfig = {
   verbose?: boolean                    // 详细调试日志
   abortController?: AbortController    // 取消控制器
   orphanedPermission?: OrphanedPermission  // 孤儿权限处理
+  // …另有 replayUserMessages / handleElicitation / includePartialMessages
+  //   / setSDKStatus / snipReplay 等 SDK 向字段，从略
 }
 ```
 
 几个值得注意的设计细节：
 
 - **`canUseTool` 包装**：`submitMessage()` 内部会包装这个函数，在原有权限检查基础上追踪所有权限拒绝事件。这些拒绝记录最终会在结果消息中返回给 SDK 消费者（如桌面应用），让它们知道用户拒绝了哪些操作
-- **`readFileCache`**：防止模型重复读取同一个文件。如果模型在第 3 轮调用 `FileReadTool` 读了 `src/query.ts`，第 5 轮再次请求时，缓存会返回已有内容而不是重新读取磁盘
+- **`readFileCache`**：避免重复回传同一个文件的全文。如果模型在第 3 轮调用 `FileReadTool` 读了 `src/query.ts`，第 5 轮再次请求**同一文件的同一范围**、且文件在磁盘上未改动（仍会 stat 校验 mtime）时，返回的是一个 `file_unchanged` 存根而不是重发全文——那次 Read 的结果还留在上下文里，重发只会白白重复消耗 `cache_creation` token
 - **`orphanedPermission`**：处理一种边缘情况——上一次会话在用户授权"始终允许 BashTool"后崩溃，权限没有持久化。下次启动时，这个"孤儿权限"会被重放一次
 
 ### submitMessage() 八阶段生命周期
@@ -108,7 +110,7 @@ flowchart TD
 
 **各阶段详解**：
 
-**阶段 1 — 设置**：为什么每轮都要清除技能发现（`clearSkillDiscovery()`）？因为技能是在工具执行过程中动态发现的（通过 `SkillSearchTool`），上一轮发现的技能可能引用了已经不存在的工具或配置。每轮重新发现确保技能始终是最新的。
+**阶段 1 — 设置**：为什么每轮开头都要清空技能发现追踪集合（`discoveredSkillNames.clear()`）？这个 Set 记录本轮发现过的技能名，用于喂给 `tengu_skill_tool_invocation` 遥测里的 `was_discovered` 标记；它需要跨一次 `submitMessage` 内的两次 `processUserInputContext` 重建存活，但每次 `submitMessage` 开头都清空，是为了避免 SDK 模式下多轮会话里这个集合无限增长。
 
 **阶段 2 — 孤儿权限**：只在会话的第一次 `submitMessage()` 调用时触发，且只触发一次（`orphanedPermission` 使用后被清空）。这处理的是上一个会话崩溃后遗留的权限授权。
 
@@ -119,16 +121,18 @@ flowchart TD
 
 **阶段 5 — 本地命令检查**：像 `/clear` 这样的命令不需要调用 API——它们只是清理本地状态。如果 `processUserInput()` 设置了 `shouldQuery = false`，直接 yield 命令输出并提前返回，跳过整个查询循环。
 
-**阶段 6 — 主查询循环**：这是最复杂的阶段。`for await (const msg of query(params))` 迭代查询生成器，处理 7 种不同的消息类型：
-- `message_start` / `message_delta`：更新 Token 使用统计
+**阶段 6 — 主查询循环**：这是最复杂的阶段。`for await (const msg of query(params))` 迭代查询生成器，`switch (message.type)` 分派 9 类消息：
+- `tombstone`：消息删除控制信号，跳过不处理
 - `assistant` 消息：推入消息列表并 yield 给上层
 - `progress` 消息：行内进度记录
 - `user` 消息：工具结果注入
-- `compact_boundary`：触发 snip/splice/GC 清理
-- `api_error`：yield 重试信号
+- `stream_event`：流式事件，内含 `message_start` / `message_delta` / `message_stop`，用于更新 Token 使用统计
+- `attachment`：提取结构化输出（`StructuredOutput`），并承载 `max_turns_reached` 终止信号（yield 一条 `error_max_turns` 结果后直接返回）
+- `stream_request_start`：请求开始信号，跳过不处理
+- `system`：含 `compact_boundary`（触发 snip/splice/GC 清理）与 `api_error`（yield 重试信号）两个子类型
 - `tool_use_summary`：工具使用摘要
 
-**阶段 7 — 预算检查**：两种预算限制——USD 成本（`getTotalCost() > maxBudgetUsd`）和结构化输出重试次数（最多 5 次）。
+**阶段 7 — 预算检查**：两种预算限制——USD 成本（`getTotalCost() >= maxBudgetUsd`）和结构化输出重试次数（最多 5 次）。
 
 **阶段 8 — 结果提取**：`isResultSuccessful()` 检查最后一条 assistant 消息是否有效。最终 yield 的结果消息包含丰富的元数据：usage（Token 使用量）、cost（USD 成本）、turns（工具调用轮次）、stop_reason、permission_denials（被拒绝的权限列表）等。
 
@@ -141,7 +145,14 @@ flowchart TD
 ```typescript
 export async function* query(
   params: QueryParams,
-): AsyncGenerator<StreamEvent | Message | ToolUseSummaryMessage, Terminal>
+): AsyncGenerator<
+  | StreamEvent
+  | RequestStartEvent
+  | Message
+  | TombstoneMessage
+  | ToolUseSummaryMessage,
+  Terminal
+>
 ```
 
 关键点：这是一个 `async function*`——异步生成器。它不是一次性返回结果，而是**边执行边 yield 事件**，使调用方可以实时渲染流式输出。
@@ -295,7 +306,7 @@ Claude Code 的流式处理不是简单的"等 API 返回再显示"。它利用 
 
 #### StreamingToolExecutor 实现原理
 
-`StreamingToolExecutor`（`src/services/tools/StreamingToolExecutor.ts`，531 行）的核心是一个带并发控制的工具执行队列。每个工具被追踪为 `queued → executing → completed → yielded` 四个状态：
+`StreamingToolExecutor`（`src/services/tools/StreamingToolExecutor.ts`，530 行）的核心是一个带并发控制的工具执行队列。每个工具被追踪为 `queued → executing → completed → yielded` 四个状态：
 
 ```typescript
 // src/services/tools/StreamingToolExecutor.ts — 核心调度逻辑
@@ -442,7 +453,7 @@ function isWithheldMaxOutputTokens(
 1. **错误发生**：API 返回 `stop_reason: 'max_output_tokens'`
 2. **扣留而非暴露**：错误被包装为 `AssistantMessage`（带 `apiError: 'max_output_tokens'`），推入消息列表但**不 yield** 给调用方
 3. **恢复策略 1 — 升级**：检查是否可以升级到 `ESCALATED_MAX_TOKENS`（64K）。如果可以，直接用更大的 Token 限制重试，不注入任何用户消息
-4. **恢复策略 2 — 续写**：如果升级不可用或已经用过，注入一条 meta 用户消息 `"Output token limit hit. Resume directly from where you left off..."` 让模型从断点继续，最多重试 3 次
+4. **恢复策略 2 — 续写**：如果升级不可用或已经用过，注入一条 meta 用户消息 `"Output token limit hit. Resume directly — no apology, no recap of what you were doing. Pick up mid-thought if that is where the cut happened. Break remaining work into smaller pieces."` 让模型从断点继续，最多重试 3 次
 5. **成功恢复**：如果恢复成功，那条被扣留的错误消息永远不会 yield——SDK 消费者（如桌面应用）看不到任何错误，用户感知到的是一次流畅的响应
 
 只有当所有恢复尝试都失败时（升级不可用 + 3 次续写都失败），错误才会被 yield 给上层。
@@ -453,15 +464,21 @@ function isWithheldMaxOutputTokens(
 
 ## 2.9 Token 使用追踪
 
-QueryEngine 维护完整的 Token 使用统计：
+QueryEngine 的 `totalUsage` 初始化为 `EMPTY_USAGE`（`QueryEngine.ts:206`），维护完整的 Token 使用统计：
 
 ```typescript
-totalUsage: {
+// src/services/api/emptyUsage.ts
+const EMPTY_USAGE = {
   input_tokens: 0,
-  output_tokens: 0,
-  cache_read_input_tokens: 0,
   cache_creation_input_tokens: 0,
-  server_tool_use_input_tokens: 0,
+  cache_read_input_tokens: 0,
+  output_tokens: 0,
+  server_tool_use: { web_search_requests: 0, web_fetch_requests: 0 },
+  service_tier: 'standard',
+  cache_creation: { ephemeral_1h_input_tokens: 0, ephemeral_5m_input_tokens: 0 },
+  inference_geo: '',
+  iterations: [],
+  speed: 'standard',
 }
 ```
 
@@ -469,7 +486,7 @@ totalUsage: {
 - 每条 API 响应的 `message_delta` 事件中，`currentMessageUsage` 被更新
 - `message_stop` 时，`currentMessageUsage` 通过 `accumulateUsage()` 累加到 `totalUsage`
 - `getTotalCost()` 基于 `totalUsage` 和模型定价计算 USD 总成本
-- 一旦 `getTotalCost() > maxBudgetUsd`，整个查询终止——这是防止意外高成本的安全机制
+- 一旦 `getTotalCost() >= maxBudgetUsd`，整个查询终止——这是防止意外高成本的安全机制
 
 `cache_read_input_tokens` 和 `cache_creation_input_tokens` 的追踪对提示词缓存策略至关重要——它们告诉系统缓存是否在有效工作。缓存断裂检测（`promptCacheBreakDetection.ts`）就依赖这些数据来判断是否发生了缓存失效。
 
@@ -479,14 +496,13 @@ totalUsage: {
 
 1. **模型未调用工具**：返回纯文本响应，正常结束
 2. **达到最大轮次**：`maxTurns` 限制
-3. **USD 预算超限**：`getTotalCost() > maxBudgetUsd`
+3. **USD 预算超限**：`getTotalCost() >= maxBudgetUsd`
 4. **用户中断**：`abortController.signal` 被触发
 5. **不可恢复的错误**：PTL/MOT 恢复全部失败
-6. **连续压缩失败**：3 次 autocompact 连续失败（熔断器）
 
-> **设计决策：为什么熔断阈值是 3 次？**
+> **设计决策：连续压缩失败的熔断器为什么阈值是 3 次？**
 >
-> `MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3`（`src/services/compact/autoCompact.ts`）。源码注释引用了生产数据：*"BQ 2026-03-10: 1,279 sessions had 50+ consecutive failures (up to 3,272) in a single session, wasting ~250K API calls/day globally."* 没有这个熔断器之前，压缩一旦进入失败循环，会无限重试——每次消耗一个完整的 API 调用（约 20K output tokens）。3 次阈值在"给压缩服务恢复机会"和"避免资源浪费"之间取得平衡。
+> `MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3`（`src/services/compact/autoCompact.ts`）。源码注释引用了生产数据：*"BQ 2026-03-10: 1,279 sessions had 50+ consecutive failures (up to 3,272) in a single session, wasting ~250K API calls/day globally."* 没有这个熔断器之前，压缩一旦进入失败循环，会在每一轮都白白发起一次完整的摘要 API 调用（其输出上限 `MAX_OUTPUT_TOKENS_FOR_SUMMARY = 20K` tokens，并非每次都真的消耗这么多）。注意熔断器**不会直接终止主循环**：连续失败 3 次后，`checkAutoCompact` 对本会话后续的 autocompact 尝试直接返回 `{ wasCompacted: false }`（压缩变成 no-op），`query()` 拿到失败计数只更新 tracking，随即继续往下迭代；如果上下文最终仍然超限，是经由上面第 5 条（PTL/MOT 恢复全部失败）才真正终止。3 次阈值在"给压缩服务恢复机会"和"避免资源浪费"之间取得平衡。
 
 > **设计决策：为什么用异步生成器而不是回调/事件？**
 >
@@ -503,6 +519,6 @@ totalUsage: {
 
 ---
 
-> **动手实践**：在 [claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch) 的 `src/agent.ts` 中，你可以看到一个 ~574 行的 Agent 主循环实现。对比本章描述的双层生成器架构，思考：为什么最小实现不需要分两层？什么规模下才值得引入 QueryEngine 这样的会话管理层？参见教程 [第 1 章：Agent Loop](https://github.com/Windy3f3f3f3f/claude-code-from-scratch/blob/main/docs/01-agent-loop.md)。
+> **动手实践**：在 [claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch) 的 `src/agent.ts` 中，你可以看到一个 ~1,500 行的 Agent 主循环实现。对比本章描述的双层生成器架构，思考：为什么最小实现不需要分两层？什么规模下才值得引入 QueryEngine 这样的会话管理层？参见教程 [第 1 章：Agent Loop](https://github.com/Windy3f3f3f3f/claude-code-from-scratch/blob/main/docs/01-agent-loop.md)。
 
 上一章：[概述](./01-overview.md) | 下一章：[上下文工程](./03-context-engineering.md)

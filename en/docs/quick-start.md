@@ -115,7 +115,7 @@ Tools are the means by which an Agent interacts with the real world. Without too
 
 ### Unified Tool Interface
 
-Claude Code includes **66+ built-in tools**, all unified under the `Tool` interface. The core design is **fail-closed defaults** — if a new tool doesn't explicitly declare safety properties, it is treated as unsafe by default. This means a missing declaration won't cause a security vulnerability, only limited functionality.
+Claude Code includes **50+ built-in tools**, all unified under the `Tool` interface. The core design is **fail-closed defaults** — if a new tool doesn't explicitly declare safety properties, it is treated as unsafe by default. This means a missing declaration won't cause a security vulnerability, only limited functionality.
 
 | Core Tools | Function |
 |------------|----------|
@@ -160,7 +160,7 @@ Edit validation goes through a **14-step validation pipeline**: file existence, 
 
 ## Permissions and Security
 
-An AI Agent that can execute arbitrary Shell commands and read/write arbitrary files, without strict security controls, is a ticking time bomb. Claude Code employs a **defense in depth** strategy, with 7 protection layers progressively stacked, each using different techniques (regex, AST parsing, ML classification, human judgment), ensuring that a single point of failure won't breach the entire defense:
+An AI Agent that can execute arbitrary Shell commands and read/write arbitrary files, without strict security controls, is a ticking time bomb. Claude Code employs a **defense in depth** strategy, with 7 protection layers progressively stacked, each using different techniques (regex, AST parsing, LLM classification, human judgment), ensuring that a single point of failure won't breach the entire defense:
 
 ```
 Trust Dialog → Permission Mode → Rule Matching → Bash AST Analysis → Tool-level Validation → Sandbox Isolation → User Confirmation
@@ -172,7 +172,7 @@ The most complex part of the entire system — uses tree-sitter to perform AST-l
 
 ### Permission Decision Racing
 
-Permission confirmation uses a **racing mechanism**: UI dialog, Hook, and ML classifier run simultaneously, and the first to complete determines the outcome. For clearly safe operations (classifier makes a quick determination), the user doesn't need to wait; for operations requiring human judgment, the UI dialog pops up. User interaction always takes priority over automatic results. There is a 200ms anti-misclick grace period.
+Permission confirmation uses a **racing mechanism**: UI dialog, Hook, and LLM classifier run simultaneously, and the first to complete determines the outcome. For clearly safe operations (classifier makes a quick determination), the user doesn't need to wait; for operations requiring human judgment, the UI dialog pops up. User interaction always takes priority over automatic results. There is a 200ms anti-misclick grace period.
 
 ### Permission Rule System
 
@@ -290,7 +290,7 @@ graph TB
 
     Loop --> Compress[4-Level Compression<br/>Snip→MC→CC→AC]
     Loop --> API[Anthropic API<br/>Streaming+Caching]
-    Loop --> Tools[66+ Tools]
+    Loop --> Tools[50+ Tools]
 
     Tools --> Read[FileRead<br/>Grep/Glob]
     Tools --> Edit[FileEdit<br/>search-replace]
@@ -317,9 +317,9 @@ graph TB
 | File | Lines | Responsibility |
 |------|-------|----------------|
 | `src/query.ts` | 1,728 | Core query loop |
-| `src/QueryEngine.ts` | 1,155 | Session engine |
-| `src/Tool.ts` | ~400 | Tool interface definition |
-| `src/tools.ts` | ~200 | Tool registration |
+| `src/QueryEngine.ts` | ~1,295 | Session engine |
+| `src/Tool.ts` | ~790 | Tool interface definition |
+| `src/tools.ts` | ~390 | Tool registration |
 | `src/context.ts` | 190 | Context construction |
 | `src/services/api/claude.ts` | 3,419 | API call logic |
 | `src/services/compact/compact.ts` | 1,705 | Compression engine |

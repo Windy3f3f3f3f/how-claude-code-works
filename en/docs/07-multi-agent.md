@@ -468,7 +468,7 @@ Worktree creation process (`src/utils/worktree.ts`):
 2. **Creation**: Created under `.claude/worktrees/<slug>/`, using symbolic links for large directories (such as `node_modules`) to avoid disk usage
 3. **Cleanup**: After the task completes, if the worktree has no file changes (detected via `git diff`), it is automatically deleted; if there are changes, the path and branch name are returned, and the user decides whether to merge
 
-**Remote isolation**: Executes in a remote CCR (Cross-Continent Runtime) environment, with messages streamed via WebSocket, suitable for scenarios requiring complete sandbox isolation. Remote isolation always runs in asynchronous mode.
+**Remote isolation**: Executes in a remote CCR (Claude Code Remote, Anthropic's cloud-hosted remote session) environment, with messages streamed via WebSocket, suitable for scenarios requiring complete sandbox isolation. Remote isolation always runs in asynchronous mode.
 
 ### Fork Sub-Agent
 
@@ -600,7 +600,7 @@ The Coordinator's toolset is strictly limited — this is a core design constrai
 | `TaskStop` | Terminate Workers (cut losses when direction is wrong) |
 | `subscribe_pr_activity` | Subscribe to GitHub PR events (if available) |
 
-The Coordinator **cannot** use Bash, Edit, Read, and other tools — this ensures it only orchestrates, never executes. Internal tools (TeamCreate, TeamDelete, SendMessage, SyntheticOutput) are excluded from the main thread.
+The Coordinator **cannot** use Bash, Edit, Read, and other tools — this ensures it only orchestrates, never executes. The `INTERNAL_WORKER_TOOLS` (TeamCreate, TeamDelete, SendMessage, SyntheticOutput) are stripped from the *list of Worker-available tools presented to the Coordinator* — they are for the Coordinator/Leader's own internal orchestration and shouldn't appear in the Worker capability description (of the four, only SyntheticOutput is actually in the Worker tool set and gets filtered out; the other three aren't in the set to begin with, so the filter is defensive).
 
 **Why can't the Coordinator execute?** This is not merely a division of labor — if the Coordinator both made decisions and executed them, it would tend toward "doing it myself is faster than delegating," thereby degenerating into an ordinary single Agent. The hard limitation on the toolset forces it to accomplish all actual operations through Workers, which guarantees objectivity in task allocation and parallelization.
 
@@ -971,25 +971,13 @@ flowchart LR
 
 ### Permission Stripping and Restoration
 
-Upon entering Plan mode, the system performs fine-grained permission management:
+Upon entering Plan mode, `prepareContextForPlanMode` (`src/utils/permissions/permissionSetup.ts`) performs a layer of fine-grained permission management. Its real semantics differ from the common intuition, and three points are worth spelling out:
 
-```typescript
-// src/utils/permissions/permissionSetup.ts
-function prepareContextForPlanMode(context: ToolPermissionContext) {
-  // 1. Remember the permission mode before entering Plan (e.g., default/auto)
-  //    Restore to this mode upon exit
-  context.prePlanMode = context.mode
+1. **It only records the old mode; it does not switch to plan inside the function.** It stashes the pre-Plan permission mode (e.g., `default`/`auto`) into `prePlanMode` for restoration on exit, and returns a new context; the function body **never** sets `mode = 'plan'`. The actual switch to plan mode happens in the caller `EnterPlanModeTool`, via `applyPermissionUpdate({ type: 'setMode', mode: 'plan' })`.
 
-  // 2. If entering from auto mode, strip dangerous permissions
-  //    Prevent the auto classifier from approving write operations during exploration
-  if (context.mode === 'auto') {
-    stripDangerousPermissionsForAutoMode(context)
-  }
+2. **Handling of dangerous permissions hinges on "whether auto is used during plan", not on "entering from auto strips them".** When entering from `auto` mode: if plan-auto (`shouldPlanUseAutoMode()`) is enabled, it keeps auto and does **not** strip; if disabled, it calls `restoreDangerousPermissions()` — a *restore*, not a strip. The branch that actually calls `stripDangerousPermissionsForAutoMode()` to strip dangerous permissions is the one where the current mode is **not** auto and plan-auto is enabled — the goal being to keep the auto classifier from approving write operations during exploration.
 
-  // 3. Switch to plan mode
-  context.mode = 'plan'
-}
-```
+3. This entire logic is gated behind the `TRANSCRIPT_CLASSIFIER` feature gate; when the gate is off, the function simply records `prePlanMode` and returns the context unchanged.
 
 **"Dangerous permissions" that are stripped include**: Bash tool-level allow rules, script interpreter prefixes (`python:*`, `node:*`, etc.), and Agent wildcards (`agent(*)`). These permissions are automatically restored after the user approves the plan.
 

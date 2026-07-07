@@ -65,9 +65,10 @@ graph TB
 源码 `memoryTypes.ts` 中 feedback 类型的定义揭示了一个微妙的设计决策——feedback 不仅记录用户的纠正，还记录用户的肯定：
 
 ```
-Guidance or correction the user has given you. These are a very important
-type of memory to read and write as they allow you to remain coherent and
-responsive to the way you should approach work in the project.
+Guidance the user has given you about how to approach work — both what to
+avoid and what to keep doing. These are a very important type of memory to
+read and write as they allow you to remain coherent and responsive to the
+way you should approach work in the project.
 ```
 
 为什么同时记录成功和失败？源码注释中有一段关键解释（意译）：
@@ -154,7 +155,7 @@ flowchart TD
 
 **安全决策：为什么 projectSettings 被排除？**
 
-`getAutoMemPathSetting()` 只从 user/managed settings 读取，**不**从 projectSettings 读取。原因是安全：projectSettings 来自项目的 `.claude/settings.json` 文件，它是被签入代码仓库的。一个恶意的仓库可以设置 `autoMemoryDirectory: "~/.ssh"`，让 Claude Code 的记忆写入操作（Edit/Write 工具）获得对用户 SSH 密钥目录的写访问权限。这与权限系统中"不信任项目级设置用于安全敏感路径"的原则一致。
+`getAutoMemPathSetting()` 从 policy / flag / local / user 四个可信来源按序读取，唯独**排除** projectSettings。原因是安全：projectSettings 来自项目的 `.claude/settings.json` 文件，它是被签入代码仓库的。一个恶意的仓库可以设置 `autoMemoryDirectory: "~/.ssh"`，让 Claude Code 的记忆写入操作（Edit/Write 工具）获得对用户 SSH 密钥目录的写访问权限。这与权限系统中"不信任项目级设置用于安全敏感路径"的原则一致。
 
 ### 存储格式
 
@@ -377,7 +378,7 @@ const result = await sideQuery({
 
 记忆召回通过 `pendingMemoryPrefetch` 实现**异步预取**——在模型开始生成响应的同时，后台通过 `sideQuery()` 查询 Sonnet。当模型实际需要记忆时，结果通常已经就绪。
 
-这个设计确保记忆召回的 ~250ms 延迟不叠加到用户感知的响应时间上。对用户来说，记忆召回是"免费"的。
+这个设计确保记忆召回的延迟（一次 Sonnet `sideQuery` 的往返）不叠加到用户感知的响应时间上。对用户来说，记忆召回是"免费"的。
 
 ## 6.6 记忆新鲜度与漂移防御
 
@@ -675,7 +676,7 @@ type: project
 
 1. **只记忆不可推导的信息**：代码模式从代码读，git 历史从 git 查，记忆只存"元信息"——这个约束是整个系统的根基，防止记忆成为过时的代码映射
 
-2. **语义召回优于关键词匹配**：用 Sonnet 评估相关性，能理解"部署"和"CI/CD"的语义关联。代价是 ~250ms 额外延迟，但通过异步预取完全隐藏
+2. **语义召回优于关键词匹配**：用 Sonnet 评估相关性，能理解"部署"和"CI/CD"的语义关联。代价是一次 Sonnet `sideQuery` 的额外延迟，但通过异步预取完全隐藏
 
 3. **两层截断防御长索引**：行截断捕捉正常增长，字节截断捕捉异常长行（实际观察到 197KB 在 200 行内）——面向实际数据设计，而非理论场景
 

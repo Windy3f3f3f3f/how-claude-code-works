@@ -53,8 +53,10 @@ TodoV2 做了一个关键的架构决策：**每个任务一个独立文件**。
 
 ```
 pending ──→ in_progress ──→ completed
-                              │
-              deleted ←───────┘ (特殊状态，直接删除文件)
+   │             │              │
+   └─────────────┼──────────────┘
+                 ↓
+              deleted   (特殊动作：任意状态都可直接删文件)
 ```
 
 - `pending`：刚创建，等待认领
@@ -417,13 +419,19 @@ new tasks and TaskUpdate to update task status...`
 
 ### 自动 Ownership
 
-当一个 Agent 将任务标记为 `in_progress` 时，如果没有显式指定 owner，系统自动分配：
+当一个 Agent 将任务标记为 `in_progress`、又没有显式指定 owner、且该任务当前还没有 owner 时，系统才自动分配：
 
 ```typescript
 // TaskUpdateTool.ts
-if (isAgentSwarmsEnabled() && statusChanged && newStatus === 'in_progress') {
-  if (!input.owner && context.agentName) {
-    updates.owner = context.agentName
+if (
+  isAgentSwarmsEnabled() &&
+  status === 'in_progress' &&
+  owner === undefined &&    // 未显式传 owner
+  !existingTask.owner       // 且任务当前无 owner（已有 owner 不会被改派）
+) {
+  const agentName = getAgentName()  // 从 teammate 上下文取名；ToolUseContext 只暴露 agentId
+  if (agentName) {
+    updates.owner = agentName
   }
 }
 ```
@@ -436,9 +444,10 @@ if (isAgentSwarmsEnabled() && statusChanged && newStatus === 'in_progress') {
 
 ```typescript
 // 通知内容包含完整的任务上下文
+// senderName = getAgentName() || 'team-lead'
 {
   taskId, subject, description,
-  assignedBy: context.agentName,
+  assignedBy: senderName,
   timestamp: new Date().toISOString()
 }
 ```
@@ -458,14 +467,16 @@ async function claimTaskWithBusyCheck(taskListId, taskId, claimantAgentId) {
   // 在锁内检查该 agent 是否还有未完成的任务
   const allTasks = await listTasks(taskListId)
   const busyTasks = allTasks.filter(
-    t => t.owner === claimantAgentId && t.status !== 'completed'
+    t => t.status !== 'completed' &&
+         t.owner === claimantAgentId &&
+         t.id !== taskId  // 排除目标任务本身，否则重复认领自己会被误判为 agent_busy
   )
   if (busyTasks.length > 0) {
     return { success: false, reason: 'agent_busy', busyWithTasks: ... }
   }
   
-  // 检查通过，在锁内完成认领
-  await updateTaskUnsafe(taskListId, taskId, { owner: claimantAgentId })
+  // 检查通过，在锁内完成认领（updateTask 会再取任务级锁）
+  await updateTask(taskListId, taskId, { owner: claimantAgentId })
 }
 ```
 
@@ -476,16 +487,24 @@ async function claimTaskWithBusyCheck(taskListId, taskId, claimantAgentId) {
 当一个 teammate 退出时，`unassignTeammateTasks` 会释放它持有的所有未完成任务：
 
 ```typescript
-export async function unassignTeammateTasks(taskListId, agentId) {
-  const tasks = await listTasks(taskListId)
+export async function unassignTeammateTasks(
+  teamName, teammateId, teammateName,
+  reason,  // 'terminated' | 'shutdown'
+) {
+  const tasks = await listTasks(teamName)
   for (const task of tasks) {
-    if (task.owner === agentId && task.status !== 'completed') {
-      await updateTask(taskListId, task.id, {
+    // owner 可能记的是 id 也可能是 name，两者都要匹配
+    if (
+      task.status !== 'completed' &&
+      (task.owner === teammateId || task.owner === teammateName)
+    ) {
+      await updateTask(teamName, task.id, {
         owner: undefined,
         status: 'pending',  // 回到 pending，让其他 agent 认领
       })
     }
   }
+  // 实际实现还会返回 { unassignedTasks, notificationMessage } 供上层通知队友
 }
 ```
 

@@ -28,7 +28,7 @@ Every architectural decision in Claude Code revolves around these four requireme
 
 There is no shortage of other programming Agents on the market (such as AutoGPT, OpenDevin, Aider, etc.), but Claude Code has a unique advantage: it is developed by the same team that builds the Claude model. This means **system prompts, tool descriptions, and error handling strategies are co-designed and tuned with the model's behavioral characteristics**. For example, Claude Code's system prompt is not a generic "you are a programming assistant" -- it contains detailed behavioral instructions optimized for Claude model characteristics, and the `description` fields of tools are also iteratively tuned to match the model's understanding patterns.
 
-Furthermore, Claude Code far surpasses most open-source Agent projects in production-grade engineering quality: a 5-layer defense-in-depth security system, 4-level progressive context compression, 7 error recovery strategies, streaming tool pre-execution -- these are not academic demos, but industrial-grade implementations serving real users.
+Furthermore, Claude Code far surpasses most open-source Agent projects in production-grade engineering quality: a 7-layer defense-in-depth security system, 4-level progressive context compression, 7 error recovery strategies, streaming tool pre-execution -- these are not academic demos, but industrial-grade implementations serving real users.
 
 ### Architectural Implications of "Agent-first"
 
@@ -79,7 +79,7 @@ export async function* query(
 ): AsyncGenerator<StreamEvent | Message | ToolUseSummaryMessage, Terminal>
 ```
 
-This is an async generator -- it does not return results all at once, but **yields events as it executes**. The caller (QueryEngine) consumes each event in real-time via `for await (const msg of query(params))`: every Token the model outputs, every tool call result, compression events, error recovery -- all of these flow through the same generator pipeline to the UI layer.
+This is an async generator -- it does not return results all at once, but **yields events as it executes**. The caller (REPL for the interactive path, QueryEngine for the headless/SDK path) consumes each event in real-time via `for await (const msg of query(params))`: every Token the model outputs, every tool call result, compression events, error recovery -- all of these flow through the same generator pipeline to the UI layer.
 
 The benefit of this design is **zero-buffer latency**: the user can see output the instant the model starts generating, without needing to wait for the entire response to complete.
 
@@ -91,35 +91,37 @@ The benefit of this design is **zero-buffer latency**: the user can see output t
 
 Note the return type of `query()`: `AsyncGenerator<..., Terminal>` -- `Terminal` is the generator's **return type**, representing the final state of the query, separate from the intermediate event stream yielded. This "dual-channel" approach (yielding streaming events + returning the final result) can only be cleanly expressed with generators.
 
-The entire data flow forms a nested generator pipeline: `REPL.tsx` -> `QueryEngine.submitMessage()` -> `query()` -> `queryModelWithStreaming()` (`services/api/claude.ts`). Each layer of the generator adds its own processing logic on the pipeline (compression, error recovery, permission checks), but to the upper layer, it is just a unified `AsyncGenerator` event stream.
+The entire data flow forms a nested generator pipeline with two entry points: the **interactive** REPL calls `query()` directly (`REPL.tsx:146` `import { query }`, main loop at `REPL.tsx:2793` `for await (const event of query({...}))`); the **headless / `-p` / SDK** path first goes through the session engine before joining the core loop (`cli/print.ts` -> `QueryEngine.submitMessage()` / `ask()` -> `query()`). Both paths ultimately converge on the same `query()` -> `queryModelWithStreaming()` (`services/api/claude.ts`). Each layer of the generator adds its own processing logic on the pipeline (compression, error recovery, permission checks), but to the upper layer, it is just a unified `AsyncGenerator` event stream.
 
 ### 2. Defense-in-Depth Security
 
-The permission system adopts multi-layered defense:
+Taking the Bash command — the largest attack surface — as an example, the permission system's core decision path is a multi-stage pipeline:
 
 ```
-Permission Rule Matching (src/hooks/toolPermission/)
+Permission Rule Matching (src/utils/permissions/)
     | pass
 Bash AST Analysis (src/utils/bash/, tree-sitter parsing)
     | pass
 23 Static Security Validators
     | pass
-ML Classifier (yoloClassifier)
+LLM Classifier (yoloClassifier)
     | pass
 User Confirmation Dialog
 ```
+
+> The diagram above is the Bash command's core decision path (a representative slice). The full permission system has **7 layers** — beyond the stages above, it also includes workspace trust confirmation, permission modes, and sandboxing/isolation — see the [full model in Chapter 12](/en/docs/11-permission-security.md).
 
 **Why so many layers?** Understanding the threat model is key: Claude Code executes arbitrary code on the user's real machine. The model is not perfect -- it may generate incorrect commands due to context confusion, may be misled by prompt injection in a malicious README, or may simply make a logic error. A single `rm -rf ~` is enough to cause irreversible damage.
 
 This is classic **defense in depth**: even if one layer has a bug or is bypassed, other layers can still block dangerous operations. Each layer uses a different technical approach, covering different categories of risk:
 
-1. **Permission Rule Matching** (`src/hooks/toolPermission/`): This is the **policy layer** -- users declare which operations are allowed through CLAUDE.md's `allowedTools` or the `--allowedTools` flag. This layer expresses user intent: "in this project, running `npm test` is always safe."
+1. **Permission Rule Matching** (`src/utils/permissions/`, where `permissions.ts`'s `hasPermissionsToUseTool` makes the allow/deny decision): This is the **policy layer** -- users declare which operations are allowed through CLAUDE.md's `allowedTools` or the `--allowedTools` flag. This layer expresses user intent: "in this project, running `npm test` is always safe." (`src/hooks/toolPermission/` sits above this layer as the glue that dispatches permission requests by execution context and orchestrates the confirmation dialog -- it is not the rule engine itself.)
 2. **Bash AST Analysis** (`src/utils/bash/`, tree-sitter): Instead of matching command strings with regex, it uses tree-sitter to parse Bash commands into an abstract syntax tree. Why not regex? Because Bash syntax is extremely flexible -- `r"m" -rf /`, `$(echo rm) -rf /`, `eval "rm -rf /"` are all variations that can bypass simple string matching, but AST analysis can identify the commands actually being executed.
 3. **23 Static Security Validators**: Hardcoded checks for known dangerous patterns. This is the "whitelist/blacklist" layer -- certain operations (such as writing to `/etc/passwd`, modifying SSH configuration) should be blocked regardless of context.
-4. **ML Classifier** (yoloClassifier): A trained classification model that can judge safety based on the semantic context of a command. It captures "novel" dangerous patterns that static rules cannot cover -- for example, a command that looks harmless but could cause problems in the current context.
+4. **LLM Classifier** (yoloClassifier): Issues a side-channel request to the Claude model via `sideQuery` with a dedicated system prompt, performing two-stage (stage1 / stage2) safety judgment of the command -- not a separately trained classification model, but the main model reused for a side inference. It captures "novel" dangerous patterns that static rules cannot cover -- for example, a command that looks harmless but could cause problems in the current context.
 5. **User Confirmation Dialog**: The final human review. Even if all automated layers have approved, the user can still see the operation about to be executed and choose to reject it.
 
-Key design insight: **each layer uses a completely different technology** (rule matching, syntax parsing, machine learning, human judgment), which means a single category of bug cannot bypass all layers simultaneously. Even if a permission rule is misconfigured to allow a command, the tree-sitter AST analysis will still detect structurally dangerous patterns like `rm -rf /`.
+Key design insight: **each layer uses a completely different technology** (rule matching, syntax parsing, LLM judgment, human judgment), which means a single category of bug cannot bypass all layers simultaneously. Even if a permission rule is misconfigured to allow a command, the tree-sitter AST analysis will still detect structurally dangerous patterns like `rm -rf /`.
 
 ### 3. Compile-time Feature Gate
 
@@ -155,13 +157,13 @@ The `as typeof import(...)` type assertions give TypeScript correct type informa
 
 Global state is centralized in `bootstrap/state.ts` (1,758 lines, 150+ accessors). Why not just use global variables?
 
-In a system with 66+ tools, multiple sub-Agents, compression pipelines, and a React UI, shared state is inevitable -- the current model name, session ID, Feature Flag cache, accumulated costs, file modification state, etc. -- this information needs to be accessed and modified by multiple subsystems simultaneously. A naive global variable approach would bring three practical problems:
+In a system with ~55 tools (the tool-registry count, including feature-gated ones; ~40 `buildTool` definitions are visible in the snapshot), multiple sub-Agents, compression pipelines, and a React UI, shared state is inevitable -- the current model name, session ID, Feature Flag cache, accumulated costs, file modification state, etc. -- this information needs to be accessed and modified by multiple subsystems simultaneously. A naive global variable approach would bring three practical problems:
 
 1. **Import cycles**: Module A imports B's state, B imports C's tools, C imports A's state -- in a 1,900-file project, such cycles are almost unavoidable
 2. **Untraceable modifications**: When a bug causes the model name to be unexpectedly changed, you cannot set a breakpoint to see "who changed this value and when"
 3. **React rendering issues**: Directly modifying properties of a global object does not trigger React component re-renders
 
-The solution in `bootstrap/state.ts` is to expose state through explicit getter/setter functions (such as `getSessionId()`, `getTotalCost()`, `setCurrentModel()`), rather than exporting mutable objects. Each module only imports the getter/setter functions it needs, thereby breaking import cycles; every modification goes through a function call, making it easy to add logging or breakpoint tracing.
+The solution in `bootstrap/state.ts` is to expose state through explicit getter/setter functions (such as `getSessionId()`, `getTotalCostUSD()`, `setMainLoopModelOverride()`), rather than exporting mutable objects. Each module only imports the getter/setter functions it needs, thereby breaking import cycles; every modification goes through a function call, making it easy to add logging or breakpoint tracing.
 
 UI state uses Zustand-style immutable updates -- `setAppState(prev => ({ ...prev, newField: value }))` -- ensuring React components can correctly detect state changes.
 
@@ -187,7 +189,7 @@ All capabilities -- file operations, search, Agent spawning, MCP bridging -- are
 The `Tool` interface (`src/Tool.ts`) has approximately 20 fields and methods, each playing a role in the unified pipeline:
 - `isReadOnly()`: Tells the permission system whether this tool is read-only -- read-only tools (like Grep, Glob) can skip user confirmation
 - `isConcurrencySafe()`: Tells `StreamingToolExecutor` whether this tool can execute in parallel with other tools -- Grep can, but FileEdit cannot (potential write conflicts)
-- `shouldDefer`: Tells the API layer whether to defer sending the full schema -- the schemas of 66+ tools combined consume a large number of tokens, so infrequently used tools can be loaded on demand
+- `shouldDefer`: Tells the API layer whether to defer sending the full schema -- the schemas of dozens of tools combined consume a large number of tokens, so infrequently used tools can be loaded on demand
 - `inputSchema` (Zod): Parameters generated by the model must pass Schema validation before execution, preventing malformed input from reaching the tool execution layer
 - `interruptBehavior()`: Defines the tool's behavior when the user interrupts -- some tools can be interrupted immediately, others need cleanup
 
@@ -204,7 +206,7 @@ Before diving into the subsequent chapters, here are several core concepts that 
 | **Message** | A single message in the conversation, with subtypes including `UserMessage`, `AssistantMessage`, `ToolUseSummaryMessage`, etc. | `types/message.ts` |
 | **StreamEvent** | The event unit yielded through the generator pipeline, representing a token, tool result, or state change | `types/message.ts` |
 | **Terminal / Continue** | The two transition states of the query loop -- `Terminal` means the loop ends, `Continue` means another iteration is needed | `query/transitions.ts` |
-| **QueryEngine** | The session-level engine that manages conversation lifecycle (persistence, budgeting, result assembly); the boundary between the UI layer and the core loop | `QueryEngine.ts` |
+| **QueryEngine** | The session-level engine that manages conversation lifecycle (persistence, budgeting, result assembly); the boundary between the headless/SDK entry and the core loop (the interactive REPL bypasses it and calls `query()` directly) | `QueryEngine.ts` |
 
 ## 1.4 Source Directory Structure
 
@@ -238,7 +240,7 @@ src/
 │   ├── Doctor.tsx           # Diagnostics screen
 │   └── ResumeConversation.tsx
 │
-├── tools/                   # 66+ built-in tools
+├── tools/                   # built-in tools (~40 buildTool defs in snapshot; ~55 in the registry incl. feature-gated)
 │   ├── BashTool/            # Shell command execution (with AST security analysis)
 │   ├── AgentTool/           # Sub-Agent spawning (supports worktree isolation)
 │   ├── FileReadTool/        # File reading (supports images, PDF, Notebook)
@@ -260,18 +262,18 @@ src/
 │   │   ├── autoCompact.ts   # Auto-compression trigger (threshold calculation, condition evaluation)
 │   │   └── compact.ts       # Summary generation engine (1,705 lines)
 │   │                        # Forks sub-Agent to generate conversation summary, restores recent files and skills after compression
-│   ├── mcp/                 # MCP protocol integration (7 transport types)
+│   ├── mcp/                 # MCP protocol integration (6 transports, 8 server config types)
 │   ├── oauth/               # OAuth 2.0 + PKCE
 │   ├── plugins/             # Plugin system
 │   └── lsp/                 # Language Server Protocol
 │
-├── hooks/                   # Permission and Hook handling
-│   └── toolPermission/      # Tool permission determination
-│       └── handlers/        # 3 permission handlers: rule matching, Hook, user confirmation
+├── hooks/                   # React custom hooks (UI layer); toolPermission/ handles tool permission requests
+│   └── toolPermission/      # Per-context handling of tool permission requests and dialog orchestration
+│       └── handlers/        # 3 permission handlers by execution context: interactive (confirmation), coordinator, swarmWorker
 │
 ├── coordinator/             # Multi-Agent coordinator (internal feature, Feature-gated)
-├── memdir/                  # Memory system (~/.claude/memory/ management)
-├── skills/                  # Skills system (18+ built-in skills)
+├── memdir/                  # Memory system (per-project, stored at ~/.claude/projects/<slug>/memory/)
+├── skills/                  # Skills system (14 bundled skills in skills/bundled/, registered via registerBundledSkill)
 ├── ink/                     # Custom terminal renderer (~1.0MB core, React->terminal output)
 ├── vim/                     # Vim mode
 ├── schemas/                 # Zod Schema definitions
@@ -290,16 +292,16 @@ The key to understanding Claude Code is understanding **how data flows between l
 sequenceDiagram
     participant User as User Terminal
     participant REPL as REPL.tsx
-    participant QE as QueryEngine
+    participant QE as QueryEngine<br/>(headless/-p/SDK entry)
     participant Q as query()
     participant API as callModel()
     participant STE as StreamingToolExecutor
     participant Tool as Tool Execution
 
     User->>REPL: Input message
-    REPL->>QE: submitMessage(prompt)
-    QE->>QE: processUserInput()<br/>Slash command/attachment handling
-    QE->>Q: query(params)<br/>async generator
+    Note over REPL,QE: Interactive: REPL calls query() directly<br/>Headless/-p/SDK: first via QueryEngine.submitMessage()/ask()
+    REPL->>REPL: processUserInput()<br/>Slash command/attachment handling
+    REPL->>Q: query(params)<br/>async generator
 
     loop Query loop (until no tool calls)
         Q->>Q: 4-level compression pipeline<br/>Snip→Micro→Collapse→Auto
@@ -316,14 +318,13 @@ sequenceDiagram
         end
     end
 
-    Q-->>QE: return Terminal
-    QE-->>REPL: yield final result
+    Q-->>REPL: return Terminal (interactive)<br/>headless/SDK assembled via QueryEngine
     REPL-->>User: Display response
 ```
 
 Let's step through the data flow to understand what happens at each stage:
 
-**Step 1: User input enters REPL.** The React component `REPL.tsx` captures the user's text input. If it's a slash command (like `/clear`, `/compact`), it's handled locally and never sent to the API. Regular messages are passed to `QueryEngine.submitMessage()`.
+**Step 1: User input enters REPL.** The React component `REPL.tsx` captures the user's text input. If it's a slash command, the command text itself is not sent to the model as a user message; purely local commands (like `/clear`, `/help`) are handled entirely locally, whereas commands like `/compact` still make an API call of their own during local handling (forking a sub-query to generate a summary). Regular messages enter the core loop -- interactively, REPL calls `query()` directly; on the headless / `-p` / SDK path they first go through `QueryEngine.submitMessage()`.
 
 **Step 2: QueryEngine prepares the query.** `processUserInput()` handles attachments in the message (image scaling, file reference resolution), builds a `QueryParams` object containing message history, system prompt, tool list, and permission context, then calls `query()` to start the core loop.
 
@@ -389,14 +390,14 @@ graph TB
     CLI --> Print["-p Single Query Mode"]
     CLI --> SDK[SDK/Bridge Mode]
 
-    REPL --> QE[QueryEngine Session Engine]
-    Print --> QE
+    REPL --> Query[query Core Loop]
+    Print --> QE[QueryEngine Session Engine]
     SDK --> QE
 
-    QE --> Query[query Core Loop]
+    QE --> Query
 
     Query --> API[API Service Layer]
-    Query --> Tools[Tool System 66+]
+    Query --> Tools[Tool System ~55]
     Query --> Context[Context System]
 
     API --> Retry[Retry and Fallback]
@@ -421,19 +422,19 @@ graph TB
 
 This diagram looks like a typical layered architecture, but the design decisions at each layer are worth understanding:
 
-**Entry Layer (main.tsx)**: The CLI entry handles three fundamentally different run modes -- REPL (interactive terminal), Print mode (`-p` flag, exit after a single query), and SDK/Bridge mode (for third-party programs to call). The key design is: **all three modes converge to the same QueryEngine**. This means the core Agent loop is mode-agnostic -- whether Claude Code is being used by a human interactively, called by a CI script with `-p`, or integrated by an IDE plugin via SDK, the same `query()` function is executed underneath. This is also valuable for testing: Print mode is essentially a headless testing tool.
+**Entry Layer (main.tsx)**: The CLI entry handles three fundamentally different run modes -- REPL (interactive terminal), Print mode (`-p` flag, exit after a single query), and SDK/Bridge mode (for third-party programs to call). The key design is: **all three modes ultimately converge on the same `query()` core loop** (interactively via REPL directly; `-p` / SDK first through the QueryEngine session layer). This means the core Agent loop is mode-agnostic -- whether Claude Code is being used by a human interactively, called by a CI script with `-p`, or integrated by an IDE plugin via SDK, the same `query()` function is executed underneath. This is also valuable for testing: Print mode is essentially a headless testing tool.
 
-**Session Layer (QueryEngine)**: Manages the complete lifecycle of a conversation -- message persistence (automatically saved after each interaction), cost tracking (cumulative tokens and dollar costs), budget enforcement (task budget limits), structured output retries. It is the boundary between "user interaction" and "Agent execution." When a new message arrives, QueryEngine determines whether it is a slash command, file attachment, or regular prompt, performs the appropriate preprocessing, and only then hands it over to the core loop.
+**Session Layer (QueryEngine)**: Manages the complete lifecycle of a conversation -- message persistence (automatically saved after each interaction), cost tracking (cumulative tokens and dollar costs), budget enforcement (task budget limits), structured output retries. On the headless / `-p` / SDK path, it is the boundary between "user input" and "Agent execution" (interactively, REPL takes on this step). When a new message arrives, QueryEngine determines whether it is a slash command, file attachment, or regular prompt, performs the appropriate preprocessing, and only then hands it over to the core loop.
 
 **Core Loop (query)**: This is the heart of Claude Code. A `while(true)` loop repeatedly executes: compress context -> call API -> execute tools -> determine whether to continue. The loop carries a mutable `State` object (`query.ts:204`), including message history, compression tracking state, output token recovery count, turn count, etc. The loop has 7 different "continue sites" (Continue Sites), handling normal tool loops, context-too-long recovery, compression-triggered retries, and other scenarios.
 
-**Service Layer (API + Tools + Context)**: Three independent subsystems, orchestrated by the core loop. The API service handles model communication (streaming, retry strategies, prompt caching). The tool system provides 66+ capabilities (file operations, search, Agent spawning, MCP bridging). The context system is responsible for building system prompts, injecting CLAUDE.md content, and managing git state information. The three are independent of each other.
+**Service Layer (API + Tools + Context)**: Three independent subsystems, orchestrated by the core loop. The API service handles model communication (streaming, retry strategies, prompt caching). The tool system provides ~55 capabilities (file operations, search, Agent spawning, MCP bridging). The context system is responsible for building system prompts, injecting CLAUDE.md content, and managing git state information. The three are independent of each other.
 
 **Infrastructure Layer (OAuth, History, Telemetry, Plugins)**: Cross-cutting concerns that support all other layers but do not participate in the main loop. OAuth handles authentication, History provides conversation persistence and recovery (`claude --resume`), Telemetry (lazy loaded, ~400KB+) tracks usage data, and Plugins extend tools and Hooks.
 
 ### Module Dependency Rules
 
-This layering has a critical dependency rule: **the core loop (query.ts) depends on the service layer, but never depends on the UI layer; the UI layer (REPL.tsx) depends on QueryEngine, but never directly depends on query.ts**. This means you can replace the entire terminal UI with a Web UI by just rewriting the REPL layer -- QueryEngine and all modules below it need no changes at all. SDK mode is a direct embodiment of this design: it bypasses the entire UI layer and interacts directly with QueryEngine.
+This layering has a critical dependency rule: **the core loop (query.ts) depends on the service layer, but never depends on the UI layer** -- `query.ts` does not import `REPL.tsx`, so you can replace the entire terminal UI with a Web UI and the core loop and everything below it need no changes at all. The reverse dependency is one-way: the interactive UI (`REPL.tsx`) imports and drives `query()` directly (`REPL.tsx:146` `import { query }`), while the headless / `-p` / SDK path first goes through the `QueryEngine` session layer before entering the same `query()`. SDK mode is a direct embodiment of the latter: it skips the terminal UI and interacts with the core loop through QueryEngine.
 
 ## 1.8 Code Scale Reference
 
@@ -442,12 +443,12 @@ This layering has a critical dependency rule: **the core loop (query.ts) depends
 | TypeScript files | ~1,332 |
 | TSX (React) files | ~552 |
 | Total lines | 512,000+ |
-| Built-in tools | 66+ |
+| Built-in tools | ~55 (registry tools.ts; ~40 buildTool defs in snapshot) |
 | Hook event types | 23+ |
 | Security validators | 23 |
 | MCP transport types | 7 |
 | Permission modes | 5+2 |
-| Built-in skills | 18+ |
+| Built-in skills | 14 |
 
 ---
 

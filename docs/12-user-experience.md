@@ -295,7 +295,7 @@ export function StreamingMarkdown({ children }: StreamingProps) {
 
 Spinner 不仅仅是一个"加载中"的指示——它通过视觉变化编码了系统的运行状态：
 
-**旋转字符**（`src/components/Spinner/SpinnerGlyph.tsx`）：使用一组 Unicode Braille 字符（如 `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`）做正向循环，然后反向循环，形成流畅的来回旋转效果。
+**旋转字符**（`src/components/Spinner/SpinnerGlyph.tsx`）：使用一组星芒生长字符（`· ✢ ✳ ✶ ✻ ✽`，随平台略有差异）做正向循环，然后反向循环，形成流畅的来回旋转效果。
 
 **停滞指示**（`stalledIntensity`）：当模型超过一定时间没有产出新 Token 且没有活跃的工具调用时，`stalledIntensity` 从 0 渐增到 1。这驱动一个从主题色到 `ERROR_RED {r:171, g:43, b:63}` 的**平滑 RGB 插值**：
 
@@ -419,7 +419,7 @@ MAX_529_RETRIES = 3           // 连续 529 错误触发降级的阈值
 | ... | ... | |
 | 第 7+ 次 | 32s | 上限封顶 |
 
-每次延迟额外叠加 ±25% 的随机抖动，防止多个客户端在同一时刻重试造成 "thundering herd" 效应。如果 API 响应包含 `retry-after` header，则直接使用该值替代计算值。
+每次延迟额外叠加 0~+25% 的随机抖动（只增不减），防止多个客户端在同一时刻重试造成 "thundering herd" 效应。如果 API 响应包含 `retry-after` header，则直接使用该值替代计算值。
 
 ### 前台 vs 后台查询：避免级联放大
 
@@ -545,47 +545,43 @@ Claude Code 支持用户自定义快捷键，配置文件位于 `~/.claude/keybi
 {
   "bindings": [
     {
-      "key": "ctrl+s",
-      "command": "submit",          // 用 Ctrl+S 替代 Enter 提交
-      "when": "inputFocused"
-    },
-    {
-      "key": "ctrl+k ctrl+s",       // 和弦快捷键（Chord）
-      "command": "settings"
+      "context": "Chat",              // 上下文（枚举），此块只在聊天输入聚焦时生效
+      "bindings": {
+        "ctrl+s": "chat:submit",       // 用 Ctrl+S 提交
+        "ctrl+k ctrl+s": "command:config"  // 和弦快捷键（Chord），执行 /config
+      }
     }
   ]
 }
 ```
 
+顶层是 `bindings` 数组，每个元素是一个 `{ context, bindings }` 块：`context` 是枚举值（`Global`/`Chat`/`Confirmation` 等），`bindings` 是「按键序列 → 动作」的映射，动作要么是点分标识（如 `chat:submit`、`app:interrupt`），要么是 `command:xxx` 形式（执行对应斜杠命令）。
+
 键绑定系统支持三个关键特性：
 
 - **和弦快捷键（Chord）**：多键组合，如 `ctrl+k ctrl+s` 需要依次按下两组按键才触发。这借鉴了 VS Code 的设计。终端环境下可用的键组合远比 GUI 应用少（很多组合被终端仿真器或 shell 占用），和弦机制通过序列组合扩展了可用的快捷键空间。
-- **上下文条件（`when`）**：通过 `when` 字段限定快捷键的生效范围，如 `inputFocused`（输入框聚焦时）、`permissionDialogOpen`（权限对话框打开时）等。
+- **上下文条件（`context`）**：通过 `context` 字段限定快捷键的生效范围，取值是枚举，如 `Chat`（聊天输入聚焦时）、`Confirmation`（确认/权限对话框弹出时），`Global` 则在任何界面生效。
 - **扩展键码**：得益于 Kitty 键盘协议，Claude Code 能区分传统终端无法分辨的按键组合（如 Ctrl+Shift+A 与 Ctrl+A），提供更精细的快捷键支持。
 
 ## 14.7 Vim 模式
 
 `src/vim/` 实现了终端输入的 Vim 键绑定（总计约 40KB），使习惯 Vim 的用户可以在 Claude Code 的输入框中使用熟悉的编辑模式。
 
-### 四模式状态机
+### 双模式状态机
 
-Vim 模式实现了完整的四模式状态机，模式间通过特定按键转换：
+Vim 模式实现了双模式（NORMAL / INSERT）状态机，模式间通过特定按键转换：
 
 ```mermaid
 stateDiagram-v2
     [*] --> Normal
     Normal --> Insert: i, a, o, A, I, O
     Insert --> Normal: Escape
-    Normal --> Visual: v, V
-    Visual --> Normal: Escape
-    Normal --> Command: :
-    Command --> Normal: Escape, Enter
 ```
 
 - **Normal 模式**：默认模式，用于导航和操作组合
 - **Insert 模式**：文本输入模式，行为与普通编辑器一致
-- **Visual 模式**：文本选择模式，支持字符选择（`v`）和行选择（`V`）
-- **Command 模式**：命令行模式，通过 `:` 进入
+
+Claude Code 的 Vim 子集不含 Visual、Command 两种模式——选择与删改都靠 NORMAL 模式下的 operator + motion + text object 组合完成（如 `diw`、`ci"`），无需进入独立的选区模式或命令行模式。
 
 ### operators.ts（16KB）— 操作符
 
@@ -671,17 +667,17 @@ REPL 界面由多个关键子组件协同工作：
 
 ### 权限确认的 200ms 防误触
 
-`PermissionRequest` 的 200ms 防误触不是一个 "nice to have"——它是一个**安全关键设计**。
+`PermissionRequest` 弹出后，前 200ms 有一个 grace period（`interactiveHandler.ts` 的 `GRACE_PERIOD_MS = 200`）会**忽略用户交互**。
 
-场景：用户正在快速输入一段话。Agent 此时决定执行一个 Bash 命令，弹出了权限确认对话框。如果对话框弹出后立即响应按键，用户的下一个 Enter（本意是换行或提交消息）就会被解读为"Allow"——意外地批准了一个可能修改文件系统的操作。
+场景：用户正在快速输入一段话。Agent 此时决定执行一个 Bash 命令，弹出了权限确认对话框。此时安全分类器可能正在后台判定这个操作能否自动放行（auto-approve）。如果对话框一弹出就立刻响应按键，用户手上残留的击键（本意是继续打字）会被当成「用户已介入」，从而把正在跑的分类器/自动判定**提前取消掉**。grace period 的作用就是：弹窗后 200ms 内的交互一律不算数（不置 `userInteracted`、不清除分类器指示），等这段窗口过去再开始接受输入。
 
-200ms 的设计依据：人类快速打字的击键间隔通常在 50-150ms 之间。200ms 的延迟确保用户已经停止打字动作（视觉上注意到弹窗出现），然后才开始接受输入。这个值不能太长（否则影响想要快速确认的用户），也不能太短（否则无法防止误触）。
+200ms 的设计依据：人类快速打字的击键间隔通常在 50-150ms 之间。200ms 的延迟确保用户已经停止打字动作（视觉上注意到弹窗出现），然后才开始接受输入。这个值不能太长（否则影响想要快速确认的用户），也不能太短（否则无法拦住误触键）。
 
 ### 会话恢复
 
 Claude Code 具备完整的会话恢复能力，确保意外中断不会丢失工作进度：
 
-- **对话历史持久化**：对话记录保存在 `~/.claude/history.jsonl`，每轮交互实时写入
+- **历史持久化**：用户输入历史保存在 `~/.claude/history.jsonl`（全局、跨项目共享，供上箭头和 Ctrl+R 检索）；完整对话 transcript 则按会话单独存为 `<sessionId>.jsonl`，断点续传/恢复读的是后者，而非 history.jsonl
 - **断点续传**：重启时检测到未完成的会话，提示用户是否恢复
 - **Worktree 状态保留**：如果中断时有子 Agent 在 Git Worktree 中工作，该 Worktree 会被保留。恢复会话后可以继续从断点执行
 

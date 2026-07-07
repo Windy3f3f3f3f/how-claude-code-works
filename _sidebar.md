@@ -29,6 +29,11 @@
 - **运行观测**
   - [16. 可观测性：Metrics 与 Trace](/docs/16-observability.md)
 
+- **快照之后的新功能（黑盒逆向）**
+  - [17. 自治与续跑：/goal 与 /loop](/docs/17-autonomy-goal-loop.md)
+  - [18. Auto Mode：权限进入分类器时代](/docs/18-auto-mode.md)
+  - [19. Dynamic Workflows：确定性脚本编排 agent 舰队](/docs/19-dynamic-workflows.md)
+
 - **参考**
   - [速查参考](/docs/reference.md)
 

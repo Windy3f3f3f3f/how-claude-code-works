@@ -48,15 +48,15 @@ Why split into two layers? Because **session management and query execution have
 
 `src/QueryEngine.ts` (1,295 lines) is the outer shell of a conversation. Its core method `submitMessage()` drives a complete user interaction.
 
-### Full Configuration Parameters
+### Core Configuration Parameters (Excerpt)
 
-QueryEngine receives all configuration through `QueryEngineConfig`:
+QueryEngine receives configuration through `QueryEngineConfig`; the core fields are:
 
 ```typescript
 // src/QueryEngine.ts
 export type QueryEngineConfig = {
   cwd: string                          // Working directory for tool execution
-  tools: Tools                         // Available tool set (66+ built-in tools)
+  tools: Tools                         // Available tool set (40+ built-in tools)
   commands: Command[]                  // Slash commands (/compact, /memory, /clear, etc.)
   mcpClients: MCPServerConnection[]    // Active MCP server connections
   agents: AgentDefinition[]            // Custom Agent definitions (from .claude/agents/)
@@ -79,13 +79,15 @@ export type QueryEngineConfig = {
   verbose?: boolean                    // Verbose debug logging
   abortController?: AbortController    // Cancellation controller
   orphanedPermission?: OrphanedPermission  // Orphaned permission handling
+  // …plus SDK-oriented fields replayUserMessages / handleElicitation /
+  //   includePartialMessages / setSDKStatus / snipReplay, omitted here
 }
 ```
 
 A few noteworthy design details:
 
 - **`canUseTool` wrapping**: Inside `submitMessage()`, this function is wrapped to track all permission denial events on top of the original permission checks. These denial records are ultimately returned in the result message to SDK consumers (such as the desktop app), letting them know which operations the user rejected
-- **`readFileCache`**: Prevents the model from repeatedly reading the same file. If the model reads `src/query.ts` via `FileReadTool` on turn 3, when it requests the same file again on turn 5, the cache returns the existing content instead of re-reading from disk
+- **`readFileCache`**: Avoids re-sending the full content of a file that was already read. If the model reads `src/query.ts` via `FileReadTool` on turn 3, when it requests the **same file over the same range** on turn 5 and the file is unchanged on disk (mtime is still stat-checked), it returns a `file_unchanged` stub instead of re-sending the full content — that earlier Read's result is still in context, so re-sending would only waste `cache_creation` tokens
 - **`orphanedPermission`**: Handles an edge case — the previous session crashed after the user authorized "always allow BashTool", but the permission wasn't persisted. On next startup, this "orphaned permission" is replayed once
 
 ### submitMessage() Eight-Phase Lifecycle
@@ -108,7 +110,7 @@ flowchart TD
 
 **Detailed explanation of each phase**:
 
-**Phase 1 — Setup**: Why clear skill discovery (`clearSkillDiscovery()`) every turn? Because skills are dynamically discovered during tool execution (via `SkillSearchTool`), and skills discovered in the previous turn may reference tools or configurations that no longer exist. Re-discovering each turn ensures skills are always up to date.
+**Phase 1 — Setup**: Why clear the skill-discovery tracking set (`discoveredSkillNames.clear()`) at the start of each turn? This Set records the skill names discovered during the turn and feeds the `was_discovered` flag on `tengu_skill_tool_invocation` telemetry. It must survive across the two `processUserInputContext` rebuilds inside a single `submitMessage`, but it is cleared at the start of each `submitMessage` to avoid unbounded growth across many turns in SDK mode.
 
 **Phase 2 — Orphaned permission**: Only triggers on the first `submitMessage()` call of a session, and only once (the `orphanedPermission` is cleared after use). This handles permission grants left over from a previous crashed session.
 
@@ -119,16 +121,18 @@ flowchart TD
 
 **Phase 5 — Local command check**: Commands like `/clear` don't need API calls — they only clean up local state. If `processUserInput()` sets `shouldQuery = false`, it directly yields the command output and returns early, skipping the entire query loop.
 
-**Phase 6 — Main query loop**: This is the most complex phase. `for await (const msg of query(params))` iterates over the query generator, handling 7 different message types:
-- `message_start` / `message_delta`: Update Token usage statistics
+**Phase 6 — Main query loop**: This is the most complex phase. `for await (const msg of query(params))` iterates over the query generator, and `switch (message.type)` dispatches 9 message types:
+- `tombstone`: Message-removal control signal, skipped
 - `assistant` messages: Push to message list and yield to upper layer
 - `progress` messages: Inline progress logging
 - `user` messages: Tool result injection
-- `compact_boundary`: Trigger snip/splice/GC cleanup
-- `api_error`: Yield retry signal
+- `stream_event`: Streaming events, containing `message_start` / `message_delta` / `message_stop`, used to update Token usage statistics
+- `attachment`: Extracts structured output (`StructuredOutput`) and carries the `max_turns_reached` termination signal (yields an `error_max_turns` result, then returns)
+- `stream_request_start`: Request-start signal, skipped
+- `system`: Contains the two subtypes `compact_boundary` (triggers snip/splice/GC cleanup) and `api_error` (yields a retry signal)
 - `tool_use_summary`: Tool usage summary
 
-**Phase 7 — Budget check**: Two types of budget limits — USD cost (`getTotalCost() > maxBudgetUsd`) and structured output retry count (maximum 5 times).
+**Phase 7 — Budget check**: Two types of budget limits — USD cost (`getTotalCost() >= maxBudgetUsd`) and structured output retry count (maximum 5 times).
 
 **Phase 8 — Result extraction**: `isResultSuccessful()` checks whether the last assistant message is valid. The final yielded result message includes rich metadata: usage (Token consumption), cost (USD cost), turns (tool call turns), stop_reason, permission_denials (list of rejected permissions), etc.
 
@@ -141,7 +145,14 @@ flowchart TD
 ```typescript
 export async function* query(
   params: QueryParams,
-): AsyncGenerator<StreamEvent | Message | ToolUseSummaryMessage, Terminal>
+): AsyncGenerator<
+  | StreamEvent
+  | RequestStartEvent
+  | Message
+  | TombstoneMessage
+  | ToolUseSummaryMessage,
+  Terminal
+>
 ```
 
 Key point: this is an `async function*` — an async generator. It doesn't return results all at once; instead, it **yields events as it executes**, allowing the caller to render streaming output in real time.
@@ -295,7 +306,7 @@ Claude Code's streaming processing is not a simple "wait for API to return, then
 
 #### StreamingToolExecutor Implementation
 
-The core of `StreamingToolExecutor` (`src/services/tools/StreamingToolExecutor.ts`, 531 lines) is a concurrency-controlled tool execution queue. Each tool is tracked through four states: `queued → executing → completed → yielded`:
+The core of `StreamingToolExecutor` (`src/services/tools/StreamingToolExecutor.ts`, 530 lines) is a concurrency-controlled tool execution queue. Each tool is tracked through four states: `queued → executing → completed → yielded`:
 
 ```typescript
 // src/services/tools/StreamingToolExecutor.ts — Core scheduling logic
@@ -442,7 +453,7 @@ Suppose the model is editing a large file and gets truncated by `max_output_toke
 1. **Error occurs**: API returns `stop_reason: 'max_output_tokens'`
 2. **Withhold rather than expose**: The error is wrapped as an `AssistantMessage` (with `apiError: 'max_output_tokens'`), pushed to the message list but **not yielded** to the caller
 3. **Recovery strategy 1 — Escalation**: Check if escalation to `ESCALATED_MAX_TOKENS` (64K) is possible. If so, retry directly with a larger Token limit without injecting any user message
-4. **Recovery strategy 2 — Continuation**: If escalation is unavailable or already used, inject a meta user message `"Output token limit hit. Resume directly from where you left off..."` to have the model continue from the breakpoint, with up to 3 retries
+4. **Recovery strategy 2 — Continuation**: If escalation is unavailable or already used, inject a meta user message `"Output token limit hit. Resume directly — no apology, no recap of what you were doing. Pick up mid-thought if that is where the cut happened. Break remaining work into smaller pieces."` to have the model continue from the breakpoint, with up to 3 retries
 5. **Successful recovery**: If recovery succeeds, the withheld error message is never yielded — SDK consumers (such as the desktop app) see no errors, and the user perceives a smooth response
 
 Only when all recovery attempts fail (escalation unavailable + all 3 continuation attempts fail) is the error yielded to the upper layer.
@@ -453,15 +464,21 @@ Without withholding, SDK consumers (desktop app, Bridge mode) would terminate th
 
 ## 2.9 Token Usage Tracking
 
-QueryEngine maintains comprehensive Token usage statistics:
+QueryEngine's `totalUsage` is initialized to `EMPTY_USAGE` (`QueryEngine.ts:206`) and maintains comprehensive Token usage statistics:
 
 ```typescript
-totalUsage: {
+// src/services/api/emptyUsage.ts
+const EMPTY_USAGE = {
   input_tokens: 0,
-  output_tokens: 0,
-  cache_read_input_tokens: 0,
   cache_creation_input_tokens: 0,
-  server_tool_use_input_tokens: 0,
+  cache_read_input_tokens: 0,
+  output_tokens: 0,
+  server_tool_use: { web_search_requests: 0, web_fetch_requests: 0 },
+  service_tier: 'standard',
+  cache_creation: { ephemeral_1h_input_tokens: 0, ephemeral_5m_input_tokens: 0 },
+  inference_geo: '',
+  iterations: [],
+  speed: 'standard',
 }
 ```
 
@@ -469,7 +486,7 @@ Tracking mechanism:
 - In each API response's `message_delta` event, `currentMessageUsage` is updated
 - At `message_stop`, `currentMessageUsage` is accumulated into `totalUsage` via `accumulateUsage()`
 - `getTotalCost()` calculates the total USD cost based on `totalUsage` and model pricing
-- Once `getTotalCost() > maxBudgetUsd`, the entire query terminates — this is a safety mechanism to prevent unexpectedly high costs
+- Once `getTotalCost() >= maxBudgetUsd`, the entire query terminates — this is a safety mechanism to prevent unexpectedly high costs
 
 Tracking `cache_read_input_tokens` and `cache_creation_input_tokens` is crucial for prompt caching strategy — they tell the system whether caching is working effectively. Cache break detection (`promptCacheBreakDetection.ts`) relies on this data to determine whether cache invalidation has occurred.
 
@@ -479,14 +496,13 @@ The loop terminates under the following conditions:
 
 1. **Model did not call any tools**: Returns a plain text response, normal termination
 2. **Maximum turns reached**: `maxTurns` limit
-3. **USD budget exceeded**: `getTotalCost() > maxBudgetUsd`
+3. **USD budget exceeded**: `getTotalCost() >= maxBudgetUsd`
 4. **User interruption**: `abortController.signal` triggered
 5. **Unrecoverable error**: All PTL/MOT recovery attempts failed
-6. **Consecutive compaction failures**: 3 consecutive autocompact failures (circuit breaker)
 
-> **Design Decision: Why is the circuit breaker threshold 3?**
+> **Design Decision: Why is the consecutive-compaction-failure circuit breaker threshold 3?**
 >
-> `MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3` (`src/services/compact/autoCompact.ts`). The source code comment cites production data: *"BQ 2026-03-10: 1,279 sessions had 50+ consecutive failures (up to 3,272) in a single session, wasting ~250K API calls/day globally."* Without this circuit breaker, once compaction entered a failure loop, it would retry indefinitely — each time consuming a full API call (~20K output tokens). The threshold of 3 strikes a balance between "giving the compaction service a chance to recover" and "avoiding resource waste".
+> `MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3` (`src/services/compact/autoCompact.ts`). The source code comment cites production data: *"BQ 2026-03-10: 1,279 sessions had 50+ consecutive failures (up to 3,272) in a single session, wasting ~250K API calls/day globally."* Without this circuit breaker, once compaction entered a failure loop, it would fire off a full summary API call on every turn (whose output ceiling is `MAX_OUTPUT_TOKENS_FOR_SUMMARY = 20K` tokens — not that a failed attempt actually consumes that much). Note the circuit breaker **does not terminate the main loop directly**: after 3 consecutive failures, `checkAutoCompact` simply returns `{ wasCompacted: false }` for the rest of the session (compaction becomes a no-op), and `query()` merely records the failure count and continues iterating; if the context ultimately still exceeds the limit, termination happens via condition 5 above (all PTL/MOT recovery failed). The threshold of 3 strikes a balance between "giving the compaction service a chance to recover" and "avoiding resource waste".
 
 > **Design Decision: Why use async generators instead of callbacks/events?**
 >
@@ -503,6 +519,6 @@ The loop terminates under the following conditions:
 
 ---
 
-> **Hands-on Practice**: In [claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch)'s `src/agent.ts`, you can see a ~574-line Agent main loop implementation. Compare it with the two-layer generator architecture described in this chapter and consider: why doesn't the minimal implementation need two layers? At what scale does it become worthwhile to introduce a session management layer like QueryEngine? See the tutorial [Chapter 1: Agent Loop](https://github.com/Windy3f3f3f3f/claude-code-from-scratch/blob/main/docs/01-agent-loop.md).
+> **Hands-on Practice**: In [claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch)'s `src/agent.ts`, you can see a ~1,500-line Agent main loop implementation. Compare it with the two-layer generator architecture described in this chapter and consider: why doesn't the minimal implementation need two layers? At what scale does it become worthwhile to introduce a session management layer like QueryEngine? See the tutorial [Chapter 1: Agent Loop](https://github.com/Windy3f3f3f3f/claude-code-from-scratch/blob/main/docs/01-agent-loop.md).
 
 Previous chapter: [Overview](/en/docs/01-overview.md) | Next chapter: [Context Engineering](/en/docs/03-context-engineering.md)

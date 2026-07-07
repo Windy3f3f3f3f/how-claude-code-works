@@ -13,7 +13,7 @@ Claude Code 提供两种文件编辑工具，各有其适用场景：
 | **FileEditTool** | search-and-replace | 修改已有文件中的特定部分 | 低 |
 | **FileWriteTool** | 全文件覆盖写入 | 创建新文件或完整重写 | 高 |
 
-系统提示词明确指引模型：**优先使用 FileEditTool**。只有在创建全新文件或需要完整重写时，才使用 FileWriteTool。
+系统提示词与工具描述共同引导模型**优先使用 FileEditTool**——工具描述里更是写死了"只在创建新文件或完整重写时才用 Write"。
 
 FileEditTool 之所以成为默认选择，是因为它在工程上解决了 LLM 编辑代码最棘手的问题：如何让一个可能产生幻觉的模型安全地修改真实代码？接下来我们深入剖析 FileEditTool 的设计，理解每一个工程决策背后的 why。
 
@@ -298,7 +298,7 @@ FileWriteTool 的定位是创建新文件或完整重写：
 }
 ```
 
-系统提示词中的使用指引：
+FileWriteTool 的工具描述（随 tools 数组一起下发给模型，不是 system prompt）中的使用指引：
 - 对已有文件，**必须先用 Read 工具读取内容**，然后编辑
 - 优先使用 Edit 工具修改现有文件——它只发送 diff
 - 只在创建新文件或完整重写时使用 Write
@@ -394,7 +394,7 @@ if (size > MAX_EDIT_FILE_SIZE) {
 
 ## 10.4 编辑前的读取要求
 
-系统提示词强制要求：**编辑文件前必须先读取**。
+FileEditTool 的**工具描述**（随 tools 数组一起下发给模型，不是 system prompt）强制要求**编辑文件前必须先读取**：
 
 ```
 You MUST use your Read tool at least once in the conversation
@@ -402,7 +402,7 @@ before editing. This tool will error if you attempt an edit
 without reading the file.
 ```
 
-这不仅是提示词层面的约束——FileEditTool 的实现中实际检查 `readFileState` 缓存，如果文件未被读取过，会返回错误（error code 6）。
+这不仅是工具描述层面的约束——FileEditTool 的实现中实际检查 `readFileState` 缓存，如果文件未被读取过，会返回错误（error code 6）。（"先读再改"的高层意图在真实系统提示词 `constants/prompts.ts` 里也有——较软的 "read it first"；工具描述则把它落成会硬报错的强约束。）
 
 这个设计确保模型：
 1. 了解文件的当前状态
@@ -415,7 +415,7 @@ without reading the file.
 
 **场景 1：过期记忆**。用户在对话的第 3 轮让 Claude 修改 `utils.ts` 中的 `formatDate()` 函数。Claude 在第 1 轮读取过这个文件，知道函数签名是 `function formatDate(date: Date)`。但在第 2 轮中，用户在 IDE 中手动将签名改为 `function formatDate(date: Date, locale?: string)`。如果没有读取前置约束，Claude 会基于对话历史中的旧版本生成 `old_string: "function formatDate(date: Date)"`——这个字符串在当前文件中已经不存在了（因为多了 `locale` 参数），编辑会失败。更糟糕的情况是，如果 Claude 使用 FileWriteTool 全文件重写，旧版本的内容会直接覆盖用户刚做的手动修改。
 
-**场景 2：`isPartialView` 的陷阱**。某些文件在 Read 时会被注入额外内容（如 HTML 文件的注释会被剥离，`MEMORY.md` 会被截断）。这些文件的 `readFileState` 会被标记为 `isPartialView: true`。如果允许基于部分视图进行编辑，模型看到的内容与文件真实内容不一致，`old_string` 极有可能匹配失败或匹配到错误的位置。
+**场景 2：`isPartialView` 的陷阱**。`CLAUDE.md` / `MEMORY.md` 等会被自动注入上下文的记忆文件，注入给模型的内容可能与磁盘不一致（剥离了其中的 HTML 注释和 frontmatter、`MEMORY.md` 被截断）。这类文件的 `readFileState` 条目会带 `isPartialView: true`——此时 `content` 字段存的是磁盘原始内容，而非模型实际看到的版本。如果允许基于部分视图进行编辑，模型看到的内容与缓存里的磁盘原文不一致，`old_string` 极有可能匹配失败或匹配到错误的位置，因此 Edit/Write 都要求对这类条目先做一次真正的 Read。
 
 读取前置约束的实现也很值得注意——它区分了"完全没读"和"读了但是部分视图"两种情况，对两者都拒绝编辑：
 
@@ -475,7 +475,7 @@ if (!contentUnchanged) {
 
 ### 串行编辑
 
-由于 FileEditTool 的 `isReadOnly()` 返回 `false`，多个文件编辑操作会**串行执行**。这确保：
+由于 FileEditTool 未覆写 `isConcurrencySafe()`（`buildTool` 默认返回 `false`），调度器（`toolOrchestration.ts` 的 `partitionToolCalls`）会把它划入串行批次，多个文件编辑操作**串行执行**（`isReadOnly` 只用于权限 UI 展示、记忆抽取等场景，不决定并发）。这确保：
 - 不会出现竞争条件
 - 每个编辑基于文件的最新状态
 - 如果中间某个编辑失败，后续编辑不会在错误基础上继续
@@ -530,7 +530,7 @@ for (const edit of edits) {
 
 ## 10.6 缩进保持
 
-系统提示词中有关于缩进的明确指引：
+FileEditTool 的**工具描述**里有关于缩进的明确指引（这段具体措辞只在工具描述中，system prompt 里没有）：
 
 ```
 When editing text from Read tool output, ensure you preserve
@@ -622,7 +622,7 @@ async call(input, context) {
   // 2. 确保父目录存在
   await fs.mkdir(dirname(absoluteFilePath))
 
-  // 3. 文件历史备份（按内容哈希去重，v1 备份格式）
+  // 3. 文件历史备份（按路径哈希命名，snapshot 级去重，copyFile 复制）
   await fileHistoryTrackEdit(updateFileHistoryState, absoluteFilePath, messageId)
 
   // === 临界区：避免异步操作以保持原子性 ===
@@ -686,7 +686,7 @@ async call(input, context) {
 
 **LSP 通知**：编辑完成后立即通知 LSP 服务器，分为两步——`changeFile()`（对应 `textDocument/didChange`）告知内容已修改，`saveFile()`（对应 `textDocument/didSave`）触发 TypeScript server 等语言服务器的诊断更新。这些通知都是 fire-and-forget（`.catch()` 只做日志），不阻塞编辑返回。同时会清除该文件之前已交付的诊断信息（`clearDeliveredDiagnosticsForFile`），确保新诊断不会被去重过滤。
 
-**文件历史备份**：`fileHistoryTrackEdit()` 在写入前捕获文件原始内容，使用内容哈希去重——如果连续多次编辑没有改变内容，不会产生重复备份。备份格式为 v1（基于硬链接或复制），存储在 `~/.claude/fileHistory/` 目录下。由于是幂等操作，即使后续的过时检测失败导致编辑中止，多出的备份也不会影响状态一致性。
+**文件历史备份**：`fileHistoryTrackEdit()` 在写入前把文件原始内容备份一份。备份文件按**文件路径**的哈希命名（`sha256(路径)` 前 16 位 + `@v1`，注意哈希对象是路径不是内容），去重粒度是"当前 snapshot 内同一文件只备份一次"——第二次 `trackEdit` 直接跳过，避免用编辑后的内容覆写掉 v1 备份（真正的内容级去重发生在 `makeSnapshot` 阶段，靠读回文件逐字节比较，同样不走哈希）。备份用 `copyFile` 复制（而非把大文件读进 JS 堆，避免 OOM），存放在 `~/.claude/file-history/<sessionId>/` 下。由于是幂等操作，即使后续的过时检测失败导致编辑中止，多出的备份也不会影响状态一致性。（`FileEditTool.ts` 源码里 'keyed on content hash' 的注释与实现不符，实际是路径哈希 + snapshot 级去重。）
 
 **技能目录发现**：当编辑的文件位于某个技能目录中时，`discoverSkillDirsForPaths()` 会识别出该目录，并触发动态技能加载。此外 `activateConditionalSkillsForPaths()` 会激活路径匹配的条件技能。这使得编辑技能文件时，新技能可以立即被发现和使用。
 
@@ -773,7 +773,7 @@ Gutter 列使用 `<NoSelect>` 包裹，这样用户在终端中选择复制 diff
 graph TB
     Model[模型决策] --> Choice{选择工具}
     Choice -->|修改已有文件| Edit[FileEditTool<br/>search-and-replace<br/>isReadOnly=false<br/>isDestructive=false]
-    Choice -->|创建新文件| Write[FileWriteTool<br/>全文件写入<br/>isReadOnly=false<br/>isDestructive=true]
+    Choice -->|创建新文件| Write[FileWriteTool<br/>全文件写入<br/>isReadOnly=false<br/>isDestructive=false]
     Choice -->|Notebook| NB[NotebookEditTool<br/>cell级编辑]
 
     Edit --> Perm[权限检查]
@@ -783,6 +783,8 @@ graph TB
     Perm -->|acceptEdits模式| Auto[自动批准]
     Perm -->|default模式| Ask[用户确认]
 ```
+
+需要说明的是，FileEditTool 与 FileWriteTool 都不覆写 `isReadOnly` / `isDestructive`，两者均取 `buildTool` 默认值（`isReadOnly=false`、`isDestructive=false`）——它们的破坏性差异体现在"改局部 vs 覆写全文"的策略上，而非这两个布尔标志。
 
 在 `acceptEdits` 权限模式下，编辑类工具自动批准，无需用户确认——这对信任度高的项目是极大的效率提升。
 
@@ -795,7 +797,7 @@ graph TB
 5. **Git 是终极回滚机制**：不需要在编辑工具层面实现复杂的事务或回滚
 6. **引号标准化是现实主义**：处理真实世界中从各种来源复制粘贴的代码，而不是假设所有文件都完美规范
 7. **LSP 集成让 IDE 实时响应**：编辑后立即通知语言服务器，用户无需等待就能看到最新的诊断信息
-8. **文件历史提供额外安全网**：基于内容哈希的幂等备份，在 Git 之外多一层保护
+8. **文件历史提供额外安全网**：按路径哈希命名、snapshot 级去重的幂等备份，在 Git 之外多一层保护
 9. **输入预处理无声但关键**：尾部空白裁剪和 API 反消毒在验证前静默修正模型输出的常见瑕疵，用户和模型都不需要感知这个过程
 10. **Edit 与 Write 的换行符不对称是刻意的**：Edit 保留原始换行风格（最小变更原则），Write 始终使用 LF（模型意图原则），两者在各自的场景下都是正确的选择
 11. **级联保护防止自引用编辑**：多步编辑中的子串检查确保后续编辑不会意外修改前一步刚插入的文本，将一类难以调试的 bug 拦截在源头

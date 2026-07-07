@@ -1,429 +1,258 @@
-# 第 16 章：可观测性——一次 Prompt 的 EXPLAIN
+# 第 16 章：可观测性——一次任务的全程可追溯
 
-> 分布式数据库能对一条 SQL 做 `EXPLAIN`：它经过哪些算子、每个算子读了多少行、花了多久、有没有数据倾斜。Claude Code 对**它自己**做的是同一件事——一次 prompt 跨多个 turn，每个 turn 打了哪些 API、调了哪些工具、消耗多少 token 与钱、在哪儿等用户批权限、有没有报错重试，全部被结构化地记录并串联起来。这一章讲它怎么做到。
+> 分布式数据库能对一条 SQL 做 EXPLAIN，把它拆成算子：走了哪些步、每步读多少行、花多久、有没有倾斜。Claude Code 对它自己做的是同一件事——你交给它一个任务，它跨多个 turn 完成，每个 turn 打了哪些 API、调了哪些工具、花了多少 token 和钱、在哪等你批权限、有没有报错重试，全被记下来、能串成一条链回放。这一章讲它怎么做到，以及为什么这么设计。
 
-## 16.1 一次 prompt 的可观测链路总览
+## 16.1 三类问题，四种记录
 
-先把问题说清楚。你在终端敲下一句 "帮我修好登录的 500 错误"，接下来发生的不是"一次 LLM 调用"，而是一条**执行链**：
+先看要解决的问题。你让 Claude Code 修个 bug，它不是“调一次模型”就完事，而是跑一串 turn：读文件、定位、改、等你批、执行、跑测试、总结。事后你可能想查三类完全不同的东西：
 
-```
-用户 prompt
-  └─ turn 1: LLM 请求（读文件的意图）→ Read 工具 → tool_result 回注
-  └─ turn 2: LLM 请求（定位 bug）→ Grep 工具 → tool_result 回注
-  └─ turn 3: LLM 请求（提出改法）→ Edit 工具 → 等你批权限 → 执行 → tool_result
-  └─ turn 4: LLM 请求（跑测试）→ Bash 工具 → tool_result
-  └─ turn 5: LLM 请求（总结）→ 结束
-```
+- 这个月团队一共花了多少钱、多少 token？你要的是能累加的数字，不关心是哪一次 prompt 产生的。
+- 上周那次 `git push` 是谁批的？你要的是能按条件筛的一条条离散记录。
+- 这次修 bug 的七八步里，哪一步最慢、卡在哪？你要的是带父子关系、带耗时的一棵调用树，也就是 EXPLAIN 里那棵算子树。
 
-读者想问的正是：**这条链，Claude Code 内部是怎么记录、又怎么串起来的？** 这不是"harness 帮 Claude 写可观测代码"的问题，而是 Claude Code 对自身运行时的自省能力（self-observability）。
+三类问题，数据结构完全不同——能聚合的计数器、可查询的事件流、有嵌套的追踪树。混在一个大日志里，哪类都查不好。所以 Claude Code 把可观测性拆成对应的几层，每层只干一件事。
 
-答案是：CC 没有用一个大日志文件糊弄这件事，而是搭了**三个正交的观测平面 + 一个持久化底座**，各管一段职责：
+具体是四层：前三层是标准的 OpenTelemetry 三件套（指标 / 事件 / 追踪），第四层是它每次运行都往硬盘写的会话记录。
 
-| 平面 | 记什么 | 形态 | 默认开? | 粒度 | 落在哪 |
-|---|---|---|---|---|---|
-| **Metrics** | 聚合量：会话数、token、成本、代码行数、决策计数、活跃时长 | OTel Counter | 需 `CLAUDE_CODE_ENABLE_TELEMETRY`（用户侧）/ 组织门控（一方 BigQuery） | 低基数、可累加 | 用户自己的 OTLP 后端 / Anthropic BigQuery |
-| **Events（Logs）** | 离散事件：每次 API 请求、每个工具结果、每次权限决策、每次 hook 执行 | OTel Log Record | 需 `CLAUDE_CODE_ENABLE_TELEMETRY` + `OTEL_LOGS_EXPORTER`（普通事件非 beta；仅 `system_prompt`/`tool` 详细追踪属 beta） | 一事件一记录 | OTLP logs endpoint |
-| **Trace（Spans）** | 因果树：一次交互 → 每个 LLM 请求 / 工具调用 / 权限等待的父子与耗时 | OTel Span | BETA，需额外开 enhanced/beta tracing | 因果嵌套 | OTLP traces endpoint |
-| **Transcript JSONL** | 完整可重放的会话记录：每条消息、usage、parentUuid 链 | 本地 append-only JSONL | **默认开、day-0 就有** | 逐消息 | `~/.claude/projects/…/<sessionId>.jsonl` |
+- 指标（Metrics）回答“总账”类问题——一堆只增不减的计数器：会话数、token、花费、改动行数。为了能被时序库高效聚合，它刻意只带很粗的维度（模型名、token 类型），绝不带每次 prompt 的 ID：否则维度爆炸，库就被拖垮。这条“聚合层拒绝高基数 ID”的红线后面会反复出现。
+- 事件（Events）回答“某件事”类问题。每打一次 API、每调一个工具、每做一次权限决策，都留一条带时间戳的离散记录，你能按 prompt、按工具、按结果去筛。
+- 追踪（Trace）回答“整条链”类问题。它把一次任务建成一棵树：一次交互是根，底下挂着每个 turn 的模型调用、每次工具执行、还有“卡在等你批权限”那段时间，每个节点都带耗时。这是最贴近 EXPLAIN 的一层，但它默认关着、还在 beta，原因后面讲。
+- 会话记录（Transcript）是那份“默认就在、人人都有”的追踪。前三层要你主动开遥测、配后端才看得到；而每次运行，CC 都会往 `~/.claude/projects/` 写一个 JSONL，把每条消息、每次 token 用量、消息间的父子关系都记下来——`/resume` 靠它，社区分析工具也靠它。对绝大多数人，这才是实际用得上的那份 trace。
 
-**为什么要分四层，而不是一个大日志？** 因为四种问题需要四种数据结构：
+### 怎么把一次 prompt 的数据从四层里拼回一条链
 
-- 想画"本周这个组织烧了多少 token" → 要**低基数、可聚合**的 metric，绝不能把每条 prompt 的 ID 塞进维度里（会把时序库的基数打爆）。
-- 想查"上周二那次 `git push` 到底是谁批的" → 要**可按字段过滤的离散事件**。
-- 想看"这一次 prompt 的 5 个 turn 里，哪个 turn 的哪个工具最慢" → 要**带因果父子的 span 树**——这正是 `EXPLAIN` 的算子树。
-- 想**完整复现**一次会话（resume、审计、社区分析工具） → 要**逐条、可回放**的持久记录。
+四层各记各的，但你查问题时想要的是“这一次 prompt 的全部账”。把它们对齐到同一次 prompt，靠一个关联锚点：一个 UUID。
 
-### 把一次 prompt 串起来的锚点：`prompt.id`
-
-要把一次 prompt 的观测数据拼回"一条链"，靠的是一个关联锚点。当用户输入进入系统时，`processTextPrompt` 先生成一个 UUID 存进全局状态，并在**同一处**既开一个 root span、又发一条 `user_prompt` 事件——这一步就把追踪与事件挂到了同一次 prompt 上：
+用户输入进来时，CC 先生成这个 UUID（叫 `prompt.id`），存进全局状态，然后在同一处代码里做两件事——开一棵追踪树的根，发一条 `user_prompt` 事件。也就是说，追踪和事件从一开始就被挂到了同一次 prompt 上：
 
 ```typescript
 // utils/processUserInput/processTextPrompt.ts:31
 const promptId = randomUUID()
 setPromptId(promptId)
-// …
-startInteractionSpan(userPromptText)          // ← 开一个 root span
-void logOTelEvent('user_prompt', {            // ← 发一条 user_prompt 事件
-  prompt_length: String(otelPromptText.length),
-  prompt: redactIfDisabled(otelPromptText),   // 默认 <REDACTED>
-  'prompt.id': promptId,
-})
+startInteractionSpan(userPromptText)          // 开追踪树的根
+void logOTelEvent('user_prompt', { /* … */ 'prompt.id': promptId })
 ```
 
-此后，**每一条 OTel 事件都会自动带上这个 `prompt.id`**：
+但四层用这个 id 的方式并不一样，说清楚这点很重要，否则容易以为它是平铺在四层的同一个字段：
 
-```typescript
-// utils/telemetry/events.ts:49
-// Add prompt ID to events (but not metrics, where it would cause unbounded cardinality)
-const promptId = getPromptId()
-if (promptId) {
-  attributes['prompt.id'] = promptId
-}
-```
+- 事件层：每条事件都自动带 `prompt.id`（`events.ts:49`）。这是它真正的关联键，同一次 prompt 的所有事件靠它归拢。
+- 会话记录层：`prompt.id` 只盖在“用户消息”那种行上（用户输入行、以及工具结果回注的行，这两种在内部都算 `user` 类型），assistant 行不带。所以它是这次 prompt 在本地记录里的一个锚点，帮你定位起点，不是能把所有相关消息一网打尽的分组键。
+- 追踪层：span 根本不带 `prompt.id`。一次交互内部的父子关系不靠 id，靠“谁是谁的父 span”这种树形归属来表达（全都挂在 `claude_code.interaction` 这个根下，见 16.4）。它和事件、记录指的是同一次 prompt，纯粹因为三者是同一处代码同时开的。
+- 指标层：故意一个 prompt 级 id 都不带（`events.ts:49` 注释直说，否则会 unbounded cardinality）。
 
-同一个 ID 还会被写进本地 transcript 的 **user 行**（`sessionStorage.ts:1045` 只在 `message.type === 'user'` 时盖 `promptId`；`types/logs.ts:230`：`promptId?: string // Correlates with OTel prompt.id for user prompt messages`）。官方文档一句话点破它的用途：
+离散层用 id 关联、因果层用树形归属、聚合层拒绝 id——这条分界是整套设计的第一性原则。记住它，后面每一层都在贯彻它。
 
-> "The `prompt.id` attribute lets you tie all of those events back to the single prompt that triggered them."
-
-但要精确——`prompt.id` **不是**平均铺在四层的同一个字段，各层的关联方式不同：
-
-- **Events**：每条 OTel 事件都带 `prompt.id`（`events.ts:49`）——这是它真正的"关联键"，同一次 prompt 的所有事件靠它归拢。
-- **Transcript**：只盖在 **user 行**上（含用户输入行与 tool_result 回注行，二者都是 `user` 类型消息）——它是这次 prompt 在本地记录里的**锚点**，assistant 行并不带它。
-- **Trace**：span **不带** `prompt.id`（`sessionTracing.ts` 的 span 属性里没有它），一次交互的父子关系靠 **span parentage**（全部挂在 `claude_code.interaction` 这个 root 下，见 §16.4）来表达；它和 events/transcript 指的是同一次 prompt，只因为是"同一处代码同时开的"（上面那段 `startInteractionSpan` 与 `logOTelEvent` 并列）。
-- **Metrics**：**故意不带**任何 prompt 级 id（`events.ts:49` 注释：否则造成 unbounded cardinality）。
-
-这条分界——**离散层用 id 关联、聚合层拒绝 id、因果层用 parentage**——是整套遥测设计的第一性原则，后面会反复出现。
-
-接下来四节分别拆这四层。
+下面四节分头拆这四层。
 
 ---
 
-## 16.2 Metrics 面：OpenTelemetry 导出
+## 16.2 指标：一个开关，两条管线
 
-### 一个开关，两条并行管线
+指标面有个容易看漏的地方：它同时喂两条互不相干的管线，各由不同的开关控制。
 
-Metrics 面有一个容易被误解的地方：**它其实喂两条独立的管线**，由两套完全不同的开关控制。
+一条是给你自己的。你设 `CLAUDE_CODE_ENABLE_TELEMETRY`，CC 就把指标按标准 OTLP 协议送到你自己的 Prometheus 或 collector（`instrumentation.ts:324`），企业拿它给团队做用量看板。另一条是给 Anthropic 的：面向 API 客户、企业版、团队版，指标会送进 Anthropic 自己的 BigQuery（`isBigQueryMetricsEnabled`，`instrumentation.ts:336`），供官方做产品分析。
 
-```typescript
-// utils/telemetry/instrumentation.ts:458
-const telemetryEnabled = isTelemetryEnabled()   // CLAUDE_CODE_ENABLE_TELEMETRY
-if (telemetryEnabled) {
-  readers.push(...(await getOtlpReaders()))      // ① 用户自己的 OTLP 后端
-}
-// Add BigQuery exporter (for API customers, C4E users, and internal users)
-if (isBigQueryMetricsEnabled()) {
-  readers.push(getBigQueryExportingReader())     // ② Anthropic 一方 BigQuery
-}
-```
+两条独立。哪怕你没开 `CLAUDE_CODE_ENABLE_TELEMETRY`，BigQuery 那条也可能在跑——它由组织级的 opt-out 单独控制。想清楚这点，才不会把“我没开遥测”误当成“什么都没上报”。
 
-- **① 用户侧 OTLP 导出**：由 `CLAUDE_CODE_ENABLE_TELEMETRY` 开关（`instrumentation.ts:324`），把 metric 送到**你自己**的 Prometheus / OTLP collector。这是企业给自己团队做用量看板用的。
-- **② 一方 BigQuery 导出**：面向 API 客户 / 企业版 / 团队版（`isBigQueryMetricsEnabled`，`instrumentation.ts:336`），把 metric 送到 **Anthropic 自己的** BigQuery，供官方做产品分析。
+### 别让上报把主流程拖垮
 
-两者相互独立：即使你没开 `CLAUDE_CODE_ENABLE_TELEMETRY`，一方 BigQuery 导出仍可能在跑——但它受**组织级 opt-out** 门控（下面讲）。理解这一点，才不会把"我没开遥测"误当成"什么都没上报"。
+BigQuery 这条在每次导出前都要确认一句“这个组织允许上报吗”。最直白的写法是每次导出都打一次 API，但 `claude -p` 这种一次性调用一天可能跑几百次，那样启动路径和网络都受不了。CC 的做法是拿两级缓存把它压成“大约一天一次 API”：进程内一个一小时 TTL 的内存缓存去重，磁盘上再放一个 24 小时 TTL 的缓存跨进程存活（`metricsOptOut.ts:22`，注释原话就是这级缓存把 N 次 `claude -p` 折叠成每天约一次 API）。缓存新鲜就零网络返回，过期才后台异步刷新。上面还压了一道熔断：一旦“非必要流量被全局关闭”，直接返回未启用、在消费端就把导出停掉（`metricsOptOut.ts:57`）。
 
-### 组织级 opt-out：一个被精心设计成"几乎不打网络"的开关
+这背后是一条能推广的工程判断：可观测性本身不能成为负担。观测组件必须能被廉价地关掉、能容忍读到陈旧值、且默认不阻塞主流程。
 
-一方 BigQuery 导出会在每次导出前问一句"这个组织允许上报吗"。天真的实现是每次 export 都打一次 API，但那会给启动路径和网络添巨大负担——尤其 `claude -p` 这种一次性调用可能一天跑几百次。`metricsOptOut.ts` 用**两级缓存**把它压成"约一天一次 API 调用"：
+### 八个指标，一个稳定的底座
 
-```typescript
-// services/api/metricsOptOut.ts:22
-const CACHE_TTL_MS = 60 * 60 * 1000          // 内存 TTL：进程内去重
-const DISK_CACHE_TTL_MS = 24 * 60 * 60 * 1000 // 磁盘 TTL：跨进程存活
-// 注释原文：This is what collapses N `claude -p` invocations into ~1 API call/day.
-```
+CC 内部注册的指标只有八个，都是只增不减的计数器（`bootstrap/state.ts:955`）：启动的会话数、改动的代码行数、创建的 PR 数与 commit 数、会话花费（美元）、token 数、代码编辑工具的批/拒计数、活跃秒数。
 
-导出前 `bigqueryExporter` 调 `checkMetricsEnabled()`（`bigqueryExporter.ts:105`）：磁盘缓存新鲜就直接返回、零网络；过期才后台异步刷新。还有一道**事故熔断**——`isEssentialTrafficOnly()` 为真（非必要流量被全局关闭）时直接返回 `enabled:false`，在消费端就把导出停掉（`metricsOptOut.ts:57`）。这是一个很典型的"可观测性本身不能拖垮主流程"的工程判断：观测组件必须能被廉价地关掉、能容忍陈旧读、且默认不阻塞。
+两个细节值得留意。一是这八个和官方 [Monitoring 文档](https://code.claude.com/docs/en/monitoring-usage)的清单逐条对齐——这是个难得的“快照即当前”的稳定点，下一节会看到事件清单正好相反，快照之后猛涨。二是它们全用计数器而不用瞬时值（gauge）：计数器对采样丢失、进程重启、乱序到达都更鲁棒，聚合时只要做差值，CC 甚至默认把时序偏好设成 delta（`instrumentation.ts:113`，注释说这才是更合理的默认）。
 
-### 八个 metric：稳定的自观测底座
+还要注意指标只带“形状”不带内容。token 计数带 `type`（input/output/cacheRead/cacheCreation）和模型名，但绝不带 prompt 文本；代码行计数带 added/removed，但绝不带文件路径或代码。这不是疏忽，是刻意，理由见 16.8。
 
-CC 内部注册的 metric 只有八个，在 `setMeter` 里集中定义：
+### 把基数当旋钮
 
-```typescript
-// bootstrap/state.ts:955
-createCounter('claude_code.session.count',        …) // 启动的会话数
-createCounter('claude_code.lines_of_code.count',  …) // 改动的代码行（type=added/removed）
-createCounter('claude_code.pull_request.count',   …) // 创建的 PR 数
-createCounter('claude_code.commit.count',         …) // 创建的 commit 数
-createCounter('claude_code.cost.usage',           …) // 会话花费（USD）
-createCounter('claude_code.token.usage',          …) // token 数（type=input/output/cacheRead/cacheCreation）
-createCounter('claude_code.code_edit_tool.decision', …) // Edit/Write/NotebookEdit 的批/拒计数
-createCounter('claude_code.active_time.total',    …) // 活跃秒数
-```
+每条指标该带哪些公共属性，本身也是可配的——因为“多带一个属性”往往就等于“时序库多切一个维度”。CC 把最危险的几个做成开关，默认值就透着克制（`telemetryAttributes.ts:10`）：`session.id` 默认带，`app.version` 默认不带。
 
-这八个和官方 [Monitoring 文档](https://code.claude.com/docs/en/monitoring-usage)列出的 metric 清单**逐条对齐**——这是一个难得的"快照即当前"的稳定点（对比下一节会看到 events 清单在快照之后大幅扩张）。设计上它们全是 **Counter（单调累加）**：可观测领域里，能用 counter 就不用 gauge，因为 counter 对采样丢失、重启、乱序都更鲁棒，聚合时只需做 delta。CC 甚至默认把时序偏好设成 `delta`（`instrumentation.ts:113`，注释 "the more sane default"）。
+`app.version` 默认关的理由，和指标拒绝 `prompt.id` 是同一个：CC 周更，要是每个版本号都成为一个新维度，时序库会被版本切得粉碎。把这些交给 env 开关，等于把“我要多细的归因”和“我能扛多大的基数”之间的取舍权交给运维。可观测性设计里，这个取舍会一次次出现。
 
-**注意 metric 不带内容、只带"形状"**：token 计数带 `type=input/output/cacheRead/cacheCreation` 和 `model`，但绝不带 prompt 文本。代码行计数带 `type=added/removed`，但绝不带文件路径或代码。这不是疏忽，是刻意——见 §16.8。
-
-### 属性装配与基数控制
-
-每个 metric/event 的公共属性由 `getTelemetryAttributes()` 统一装配（`telemetryAttributes.ts:29`），而**哪些属性进得去，本身也是可配的基数旋钮**：
-
-```typescript
-// utils/telemetryAttributes.ts:10
-const METRICS_CARDINALITY_DEFAULTS = {
-  OTEL_METRICS_INCLUDE_SESSION_ID: true,   // 默认带 session.id
-  OTEL_METRICS_INCLUDE_VERSION: false,     // 默认不带 app.version（否则每次升级都新增一维）
-  OTEL_METRICS_INCLUDE_ACCOUNT_UUID: true,
-}
-```
-
-`app.version` 默认关，理由同 `prompt.id`：CC 周更，如果每个版本都成为一个新的 metric 维度，时序库会被版本号切得粉碎。把这些做成 env 开关，等于把"我要多细的归因 vs 我能承受多大的基数"的选择权交给运维。
-
-### 导出器的惰性加载
-
-一个不起眼但值得学的细节：OTLP 支持 grpc / http-json / http-protobuf 三种协议，各自的 exporter 包加起来约 1.2MB。CC 没有在启动时全部静态导入，而是在协议 switch 里**按需 `await import()`**：
-
-```typescript
-// utils/telemetry/instrumentation.ts:3
-// OTLP/Prometheus exporters are dynamically imported inside the protocol
-// switch statements below. … static imports would load all 6 (~1.2MB) on every startup.
-```
-
-一个 CLI 工具对冷启动延迟极其敏感，把"只有开了遥测、且用某协议才需要"的重依赖挪出启动关键路径，是 harness 级性能纪律的体现。
+（另有一个不起眼但值得学的细节：OTLP 的三种协议 exporter 加起来约 1.2MB，CC 没在启动时全静态导入，而是在协议分支里按需 `await import()`——把“只有开了遥测、且用某协议才需要”的重依赖挪出冷启动关键路径，`instrumentation.ts:3`。CLI 对启动延迟很敏感，这类纪律随处可见。）
 
 ---
 
-## 16.3 Events 面：离散事件管线
+## 16.3 事件：一处代码，两条事件流
 
-### 一个 call site，两条事件流
-
-这是理解 CC 遥测的第二个关键分层：**内部分析**和**客户可观测**是两条并行的事件流，常常从同一个 call site 同时发出。看 API 成功时的处理（`services/api/logging.ts`）：
+理解 CC 遥测的第二个关键，是“内部分析”和“客户可观测”是两条并行的事件流，而且常常从同一处代码同时发出。API 成功那一瞬间，这处代码连发三样东西：一条内部分析事件（去 Anthropic 的 Statsig/Datadog/BigQuery），一条客户 OTel 事件（去你自己的 OTLP 后端），再结束这次请求对应的追踪 span。
 
 ```typescript
-// 第一条：内部分析事件（Statsig / Datadog / 一方 BigQuery）
-logEvent('tengu_api_success', { model, inputTokens, outputTokens, costUSD, durationMs, ttftMs, … })
-// 第二条：客户 OTel 事件（用户自己的 OTLP）
-void logOTelEvent('api_request', {
-  model, input_tokens, output_tokens, cache_read_tokens,
-  cache_creation_tokens, cost_usd, duration_ms, speed,
-})
-// 第三条：结束这个请求对应的 trace span（见 §16.4）
-endLLMRequestSpan(llmSpan, { success: true, inputTokens, … })
+// services/api/logging.ts（API 成功时）
+logEvent('tengu_api_success', { model, inputTokens, outputTokens, costUSD, … })  // 内部分析
+void logOTelEvent('api_request', { model, input_tokens, output_tokens, … })       // 客户可观测
+endLLMRequestSpan(llmSpan, { success: true, inputTokens, … })                     // 结束 trace span
 ```
 
-一次 API 完成，三个观测平面被同一处代码同时喂到。两条事件流的分工是清晰的：
+两条流分工清楚。内部这条（名字都以 `tengu_` 打头）去向 Anthropic，供官方做产品分析、A/B、行为回归，数量上有数百个事件名，由 feature flag 加采样门控。客户那条（`logOTelEvent`）去你自己的后端，供你给团队做用量和健康看板，就官方文档化的一二十类，由 `CLAUDE_CODE_ENABLE_TELEMETRY` 门控。
 
-| | 内部分析（`logEvent('tengu_*')`） | 客户可观测（`logOTelEvent`） |
+内部这条有个有意思的类型级护栏：`logEvent` 不收裸字符串，任何要传的字符串都得显式断言成一个名字很长的类型——`AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS`（`services/analytics/index.ts:19`）。等于用编译期类型把“别把代码或文件名误传进分析后台”变成一条过不了 CI 的硬约束。真要传 PII，得走 `_PROTO_` 前缀，路由进有访问控制的 BigQuery 专列，并在扇出到 Datadog 前统一剥掉（`index.ts:45`）。
+
+### 每条客户事件的骨架
+
+客户侧事件都走 `logOTelEvent`（`events.ts:21`），它给每条事件盖三个信封字段：事件名、时间戳，和一个会话内单调递增的 `event.sequence`。
+
+`event.sequence` 值得单说一句，因为容易误解：它是个发射计数器，每发一条加一，作用是让后端在批处理和网络打乱了到达顺序之后，还能把一次 prompt 内的事件按发射先后排回来。它不是墙钟时刻——并发或重叠的 API 与工具活动谁真正先发生、各持续多久，那要看时间戳和下一节的 span 耗时。`event.sequence` 只保证一件事：离散事件的发射次序可恢复。
+
+### 快照里有哪些事件，如今又多了多少
+
+在 v2.1.88 快照里，实际发出的客户事件是这几类：`user_prompt`、`api_request`、`api_error`、`tool_result`、`tool_decision`，加上 beta 详细追踪下的 `system_prompt`、`tool`，以及 hook 的开始/结束和一条问卷事件。
+
+当前官方文档的清单已经明显扩张，多出 `assistant_response`、`compaction`、`skill_activated`、`permission_mode_changed`、`api_request_body`/`api_response_body`、`mcp_server_connection`、`plugin_loaded` 等一批。
+
+> 一条口径说明：本章 metric 清单（8 个）在快照与官方文档间稳定一致，但事件清单在 v2.1.88 之后长了不少。凡提到那些在快照里 grep 不到的标识符（`assistant_response`、`OTEL_LOG_RAW_API_BODIES` 等），一律以官方 [Monitoring 文档](https://code.claude.com/docs/en/monitoring-usage)为准，注明是“据官方文档”，不当成从快照源码里直接读到的事实。
+
+### 用 api_request 看一次调用
+
+拿最能回答读者的 `api_request` 说（`logging.ts:718`）。它在每次 API 成功后发一条，带模型名、input/output/缓存读/缓存写各多少 token、花了多少钱、耗时多久、快慢档。把一次 prompt 里所有带同一 `prompt.id` 的 `api_request` 按 `event.sequence` 排好，你就拿到这条 prompt 的一份模型调用流水：一共打了几次 API、各花多少 token 和钱、命中多少缓存、多久。`tool_decision` 和 `tool_result` 再补上“工具被怎么放行/拦截”和“工具跑了多久、成没成、结果多大”。三类拼起来，一次 prompt 的对外动作总账就有了。
+
+但要老实标一条边界。在 v2.1.88 快照里，这些事件是按 prompt 关联、不是按 turn 关联的：`api_request` 不带 turn 序号，`tool_decision` 和 `tool_result` 也不带 `tool_use_id`（当前版本才给它们加上）。所以“哪个 tool_result 对应哪次 api_request、哪个 turn”这种精确因果，光靠事件字段在快照里拼不出来——那是下一节 span 树和会话记录的父子边负责的事。事件层给的是“这次 prompt 的有序动作流水”，因果树留给追踪层。
+
+---
+
+## 16.4 追踪：一次交互的算子树，加一份人人都有的记录
+
+这是全章重心，也最贴近“对一次任务做 EXPLAIN”的诉求。它由两套东西共同承担：一套是 OpenTelemetry 的 span 树（精确因果，但默认关、还在 beta），一套是本地会话记录（默认就开、人人都有）。
+
+### (A) span 树：把一次交互建成一棵算子树
+
+CC 定义了六种 span，它们的父子关系摆出来，正好就是一棵 EXPLAIN 算子树：
+
+```
+claude_code.interaction              根：一次用户 prompt 到回复的完整周期
+  ├─ claude_code.llm_request         每个 turn 的一次模型调用
+  ├─ claude_code.tool                一次工具调用
+  │    ├─ …tool.blocked_on_user      卡在“等你批权限”的墙钟时间
+  │    └─ …tool.execution            工具真正执行的时间
+  └─ claude_code.hook                一次 hook 执行（仅 beta 详细追踪）
+```
+
+（类型定义见 `sessionTracing.ts:49`。）根就是 16.1 那个在 prompt 一进来时开的 `startInteractionSpan`，结束时补上整段耗时。父子关系怎么建立的？靠 `AsyncLocalStorage`：交互 span 存进去，之后开子 span 时从里面取出当前父 span——这样哪怕中间隔着好几层异步 await，子 span 也能正确挂到当前交互底下，而不用一路手动传句柄。
+
+三个设计细节特别能说明“追踪要做对不容易”。
+
+第一，把“等你批权限”单独计时。为什么给这段专门开一个 `tool.blocked_on_user` span？因为一次 Edit 慢，可能是模型慢、可能是磁盘慢，也可能纯粹是你去倒了杯咖啡。把“等人”从“执行”里剥出来，才能在追踪里一眼看清墙钟时间到底花在哪儿——这直接决定你该去优化模型、优化 IO，还是优化工作流。这段结束时还会记下批还是拒、谁批的，数据来自权限层（见 16.6）。
+
+第二，并发请求必须显式传 span。一次交互里常有好几个模型请求同时在打（主线程、预热、话题分类器、路径抽取器）。代码注释专门警告：回填响应时如果不把当初那个 span 显式带上，就可能挂到“恰好最后开的那个”span 上，造成响应错配（`sessionTracing.ts:342`）。这是并发追踪里最经典的坑，CC 用“显式传句柄”而不是“隐式取最近”来根治。
+
+第三，给 span 泄漏兜底。正常路径会及时结束并删除 span，但流被中断、turn 中途抛异常时，span 可能永远不 end。CC 用弱引用存活跃 span，再挂一个半小时的后台清理，把没人引用或超时的强制回收——观测设施自己不能变成内存泄漏源。
+
+每个 span 结束都带耗时，模型 span 还带 token 明细。于是这棵树天然就是一份带耗时和消耗的 EXPLAIN：哪个 turn、哪次工具、哪段等待最贵，一目了然。
+
+那它为什么默认关、还挂着 beta？因为它又贵又敏感。开启要同时满足“遥测已开”和“增强追踪已开”，后者还得编译期把这个特性编进去、运行时再放行。更详细的 beta 路径连 system prompt、模型输出都往 span 里写，门槛更高、还带脱敏。span 数量随工具调用线性涨、又背着不少属性，默认开会同时压上性能和隐私两笔账。
+
+### (B) 会话记录：那份默认就在的追踪
+
+如果说 span 树是“要专门开、给后端看”的追踪，那会话记录就是“day-0 就在、每个人本地都有”的那份。前者要你开遥测配后端，后者每次运行都自动往 `~/.claude/projects/<把工作目录转义成的目录名>/<会话 id>.jsonl` 写。`/resume` 读它，社区几乎所有分析工具也读它。对绝大多数人，这才是真正用得上的那份 trace。子 agent 另写自己的文件，每条委派链的追踪互相分开。
+
+它本质是一个用 `parentUuid` 串起来的链表：每写一条消息，都盖上一批字段，其中 `parentUuid` 指向上一条。三个精妙处：
+
+- 工具结果的父指针，指向发起它的那条 assistant 消息，而不是简单的“物理上一条”。代码专门处理这点（`sessionStorage.ts:1031`）。于是某个工具结果能精确回溯到“哪个 assistant turn 里的哪次调用请求了它”——因果是显式连边，不是靠时间顺序去猜。
+- 压缩边界断物理链、但留逻辑链。上下文压缩会把一段历史换成摘要，这时 `parentUuid` 置空（物理断开，好让 prompt 缓存稳定），但另存一个 `logicalParentUuid` 保住原来的父指针，读的时候再桥接。压缩不破坏追踪的逻辑连续性。
+- `promptId` 只盖在用户消息上，正是 16.1 那个锚点在硬盘上的落点。
+
+那怎么从这份记录里重建“一次 prompt 的多个 turn”？主力是沿 `parentUuid` 走连边：从任意一条消息回溯到根，或从起点往下顺子边展开，就能把 assistant turn、它发起的工具调用、以及回来的结果层层连起来。`promptId` 在这里是定位锚点，不是分组键——它只在 user 行上，所以你用它找到某次 prompt 的起点，再靠 `parentUuid` 把这次的 assistant 和工具因果走出来；单纯“按 promptId 分组”会漏掉不带它的 assistant 行，收不齐。这就是会话记录版的 EXPLAIN，而且它默认就躺在你硬盘上，一个遥测都不用开。
+
+用户也不必手动去解析 JSONL：`/cost` 汇总本次会话的 token、成本、时长（见 16.5），`/status`、`/context` 看别的维度，`--debug` 打开调试日志。社区那些按 transcript 算用量、抓请求的工具，也都建在这份记录或其等价数据上。
+
+### 活例子：`/goal` 和 `/loop` 怎么被追踪
+
+抽象讲完，用两个真实功能落一下地。以下来自对 2.1.201 客户端的逆向（静态抽字符串加抓包），是快照之后的东西，单独说明，跟前面基于 v2.1.88 快照的内容分开、不混为一谈。
+
+`/goal`（让 Claude 盯着一个目标反复干到达成）自带追踪字段。你设一个目标后，会话记录里会挂一条 `goal_status`，字段是条件、迭代了几轮、耗时、烧了多少 token、达成没——每一轮的进度都累计进去。它的机制是一个每轮结束就触发的 Stop hook，派一个独立的小模型判“达没达成”，判词和计数都落进这条记录。
+
+`/loop`（按间隔或自定节奏反复跑一个 prompt）则靠一串带语义的事件追踪每次触发：调度了下一次唤醒、这次唤醒结束了一个 turn、太久没动被回收、保活触发、循环结束，再加上后台调度守护进程的一族事件。每次循环重投同一个 prompt，都在这条事件流里留痕。
+
+两个例子说明同一件事：CC 的“跨多个 turn 的一次任务”不是黑盒——要么落成会话记录里的结构化字段（goal），要么落成一串带语义的事件（loop），都能重建“这次自治跑了几轮、每轮什么状态”。这两个功能的完整逆向见[第 17 章](17-autonomy-goal-loop.md)。
+
+---
+
+## 16.5 成本：不是一个总数，是一路累加
+
+`/cost` 那块摘要背后，是每次 API 成功就即时累加的账。每成功一次，这次的用量就累进按模型分的汇总，同时喂给两个计数器——花费一个，token 一个（`cost-tracker.ts:291`）。
+
+token 被拆成 input、output、缓存读、缓存写四类分开计，因为四类单价不同：缓存读命中远比新输入便宜，不分开就算不准钱。CC 甚至给内部的 advisor 子调用单独计费、单发一条事件，确保派生调用的成本不漏。
+
+这笔账还能跨会话接续：成本状态存进项目配置，`/resume` 同一个会话时按会话 id 恢复，续跑不会从零开始。进程退出时打印总账并存盘，就是你在终端看到的那块“总花费 / API 与墙钟耗时 / 代码改动 / 各模型用量”。
+
+所以这一节回答的是 EXPLAIN 里“每一环消耗多少资源”：token 和钱不是一个事后总数，而是每次调用即时累加、按模型和类型分维、还能跨 resume 接着算的运行量。
+
+---
+
+## 16.6 权限决策：把“为什么放行”也记下来
+
+EXPLAIN 里还有一环——每个动作是否正常、有没有被拦。CC 把每一次工具权限决策都记成可观测数据，核心是一个叫 `logPermissionDecision` 的函数，它是所有“批准 / 拒绝”的唯一出口，一次决策扇出到四个地方（`permissionLogging.ts:181`）：按来源分成不同名字的内部分析事件（做审批漏斗），给代码编辑工具的计数器加一，把决策写回工具上下文供追踪层读，再发一条客户 OTel 事件。
+
+有观测价值的是它把“谁批的”结构化成了 `source` 字段：配置里 allowlist 自动放的、hook 放的、你点“总是”或“这次”放的、分类器放的、你拒的、你中止的。安全复盘时，你能一眼分清“这次危险操作是人手动放的，还是规则自动放的”——这往往是决定性的。它还把“等人”量化成一个毫秒数，只在真弹了确认框时才记，自动放行不计；这个数和追踪层那个 `tool.blocked_on_user` span 是同一件事的两种呈现。而且决策被写回工具上下文，所以那个 span 结束时能标上准确的批/拒和来源——三层在权限这一点上是打通的。
+
+权限模型本身（`ask`/`allow`/`deny`、分类器、hook 决策）详见[第 12 章](11-permission-security.md)，这里只关心它怎么被观测。
+
+---
+
+## 16.7 一方 / 内部专用的设施：一条诚实的边界
+
+不是所有观测设施都给外部用户。讲清楚哪些你能用、哪些在编译期就被裁掉或只在 Anthropic 内部，才不会误判。
+
+`ant-trace` 在外部包里是个空壳。它在快照里的实现就一行占位：永远返回“未启用”。这是编译期死代码消除的活标本——外部构建里物理上没有真实现，只留一个永远关着的桩。顺带提醒一句方法论：在公开产物里搜不到某功能的完整逻辑，不等于它不存在，可能只是被编译期裁掉了。
+
+Perfetto 本地追踪也一样，是 Ant-only、编译期门控的。它能把 span 导成 Perfetto UI 里的火焰图，听着很诱人，但源码头就写明“Ant-only”“external build 里被消除”，整个初始化裹在一个编译期特性开关里（`perfettoTracing.ts:2`、`:7`、`:260`）。也就是说，`CLAUDE_CODE_PERFETTO_TRACE=1` 只在这个特性被编进包时才有用，外部构建里这段已被裁掉，环境变量置了也白置。别把它当成外部用户随手能开的功能。
+
+还有两处只值得一提：去 Anthropic BigQuery 的那条（16.2 讲过，组织 opt-out 门控，外部不经手）；以及一个把终端渲染帧率也纳入自观测的 FPS 追踪——一个 TUI 连自己画得流不流畅都记，是 UX 工程的细致处（渲染器细节见[第 14 章](12-user-experience.md)）。至于 beta 详细追踪，能把 system prompt、模型输出也写进 span，但有一张严格的可见性表：模型的思考原文是 ant-only，外部用户即使开满也拿不到；system prompt 全文只在这条路径、且每个唯一 hash 只发一次，避免重复上报大文本。
+
+> CC 反过来对逆向者埋的那些防御仪器（假工具注入、隐写指纹之类）是另一个话题，本书不展开。
+
+---
+
+## 16.8 隐私边界：能看到“形状”，看不到“内容”
+
+可观测性和隐私天生拉扯：记得越多越好查，也越危险。CC 的总原则一句话——默认只导出“形状”，内容一律要你显式开。
+
+“形状”指长度、token 数、时长、模型名、工具名、决策类型这类元数据；“内容”指 prompt 原文、模型回复、工具的输入输出、代码和文件。默认走前者，后者得逐项开：
+
+| 内容 | 开关（env） | 默认 |
 |---|---|---|
-| 去向 | Anthropic 的 Statsig/Datadog/BigQuery | 用户自己的 OTLP 后端 |
-| 目的 | 官方做产品分析、A/B、行为回归 | 用户给自己团队做用量/健康看板 |
-| 规模 | 数百个 `tengu_` 事件名（快照里 grep 到的 `logEvent('tengu_*')` 名有数百个，随去重口径而异） | 官方文档化的一二十类事件 |
-| 门控 | GrowthBook feature flag + 采样 | `CLAUDE_CODE_ENABLE_TELEMETRY` |
-| 隐私 | `AnalyticsMetadata_…_NOT_CODE_OR_FILEPATHS` 类型强制不带代码/路径 | `redactIfDisabled` 默认脱敏内容 |
+| 用户 prompt 原文 | `OTEL_LOG_USER_PROMPTS` | 打码，只留长度 |
+| 助手回复原文 | `OTEL_LOG_ASSISTANT_RESPONSES` | 脱敏，只留长度 |
+| 工具参数 / 命令 | `OTEL_LOG_TOOL_DETAILS` | 省略 / 脱敏 |
+| 工具输入输出 | `OTEL_LOG_TOOL_CONTENT` | 省略 |
+| 原始 API 请求 / 响应体 | `OTEL_LOG_RAW_API_BODIES` | 不导出 |
+| system prompt 全文 | 仅 beta 详细追踪 | 不进普通导出 |
+| 模型思考原文 | 仅内部 | 外部永不导出 |
 
-`tengu_` 这条内部流有个有意思的类型级护栏：`logEvent` 的 metadata **不允许裸字符串**，任何要传的字符串必须显式断言成 `AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS`（`services/analytics/index.ts:19`）——用编译期类型把"别把代码/文件名误传进分析后台"变成一条过不了 CI 的硬约束。还有一个 `_PROTO_*` 前缀约定，把 PII 字段路由到有访问控制的 BigQuery 专列，并在 fan-out 到 Datadog 前统一 strip（`stripProtoFields`，`services/analytics/index.ts:45`）。`tengu_skill_loaded` 事件就用 `_PROTO_skill_name` 把技能名送进受控列而不落进通用元数据（`skillLoadedEvent.ts:23`）。
+（第 1、3、4 行——用户 prompt / 工具参数命令 / 工具输入输出——在快照里有对应的脱敏代码；第 2 行“助手回复”（`OTEL_LOG_ASSISTANT_RESPONSES`）与第 5 行 `OTEL_LOG_RAW_API_BODIES` 同属快照之后新增，据官方文档。）
 
-### `logOTelEvent` 管线：每个事件的骨架
+几条设计意图值得点破。
 
-客户侧的 OTel 事件全部走 `logOTelEvent`（`utils/telemetry/events.ts:21`）。它给每条事件盖三个"信封"字段，再合上公共属性和 `prompt.id`：
+代码和文件内容永不进指标或事件。官方明说“原始文件内容和代码片段不进 metrics 或 events”，源码侧则用 16.3 那个长名字类型把它变成编译期约束。默认观测面里，你能看到“改了 N 行 TypeScript”，但看不到改了什么。
 
-```typescript
-// utils/telemetry/events.ts:42
-const attributes: Attributes = {
-  ...getTelemetryAttributes(),                 // session.id / user.id / org.id / terminal.type …
-  'event.name': eventName,
-  'event.timestamp': new Date().toISOString(),
-  'event.sequence': eventSequence++,           // 会话内单调递增，用于排序
-}
-```
+隐私门控和基数控制常常是同一个旋钮的两面。`prompt.id` 只进事件、不进指标；`app.version` 默认关——一个是怕泄可归因信息，一个是怕基数爆炸，但拧的是同一批开关。这不是巧合：往聚合后台少塞信息，既省成本又护隐私，两个诉求经常指向同一个决定。
 
-`event.sequence` 这个会话内单调计数很关键：它是**发射计数器**（`events.ts:8` 的 `let eventSequence = 0`，每发一条 `++`），批处理/网络会打乱到达顺序，有了它后端能把一次 prompt 内的事件**按发射先后重新排回**。注意它不是墙钟时刻——并发/重叠的 API 与工具活动谁真正先发生、各持续多久，要看 `event.timestamp` 与 §16.4 的 span 耗时，`event.sequence` 只保证"离散事件的发射次序可恢复"。
-
-### 快照有哪些事件，当前又扩了多少
-
-在 v2.1.88 快照里，实际通过 `logOTelEvent` 发出的客户事件是这一组（grep 可逐一确证）：`user_prompt`、`api_request`、`api_error`、`tool_result`、`tool_decision`，加上 BETA 详细追踪路径下的 `system_prompt`、`tool`，以及 hook 的 `hook_execution_start` / `hook_execution_complete`、`feedback_survey`。
-
-而**当前官方文档**的事件清单已经大幅扩张，新增了 `assistant_response`、`api_refusal`、`api_request_body` / `api_response_body`、`api_retries_exhausted`、`permission_mode_changed`、`auth`、`mcp_server_connection`、`internal_error`、`plugin_installed` / `plugin_loaded`、`skill_activated`、`at_mention`、`hook_registered`、`compaction` 等。
-
-> **快照 vs 当前**：本章的 metric 清单（8 个）在快照与官方文档间稳定一致；但 events 清单在 v2.1.88 之后明显增长。凡本节以外提到 `assistant_response` / `compaction` / `skill_activated` / `permission_mode_changed` / `OTEL_LOG_RAW_API_BODIES` 等**未在快照 grep 命中**的标识符，一律以官方 [Monitoring 文档](https://code.claude.com/docs/en/monitoring-usage)为准，标注"据官方文档（超出 v2.1.88 快照）"，不作源码级实锤。
-
-### 走读一条事件：`api_request`
-
-以最能回答读者的 `api_request` 为例（`logging.ts:718`）。它在**每次 API 调用成功后**发一条，带 `model` / `input_tokens` / `output_tokens` / `cache_read_tokens` / `cache_creation_tokens` / `cost_usd` / `duration_ms` / `speed`。把一次 prompt 里所有带同一 `prompt.id` 的 `api_request` 事件拉出来按 `event.sequence` 排序，你就得到了这条 prompt 的**一份按发射次序排列的模型调用审计流**：这次 prompt 一共打了几次 API、各花了多少 token 和钱、命中了多少缓存、耗时多久。
-
-`tool_decision` 事件（`permissionLogging.ts:230`）和 `tool_result` 事件（`toolExecution.ts:1381`）分别补上"工具被怎么放行/拦截"和"工具跑了多久、成功没、结果多大"。三类事件拼起来，一次 prompt 的**外部动作总账**就可查了。
-
-**但要诚实标一条边界**：在 v2.1.88 快照里，这些事件是 **prompt 粒度关联、不是 turn 粒度关联**——`api_request` 不带 turn 序号，`tool_decision` / `tool_result` 也**不带 `tool_use_id`**（官方文档的当前版本已给它们加了 `tool_use_id`，属快照之后新增）。所以"哪个 tool_result 对应哪次 api_request/哪个 turn"这种**精确因果归因**，光靠 events 字段在快照里拼不出来——那正是 §16.4 的 span 树与 transcript 的 parentUuid 连边负责的事。Events 面给的是"这次 prompt 的有序动作审计"，因果树留给 trace 层。
-
----
-
-## 16.4 Trace 面：一次交互的算子树 + 会话 transcript
-
-这是全章的重心，也是最贴近读者"EXPLAIN of a prompt"诉求的一层。它其实由**两套东西**共同承担：一套是 OpenTelemetry 的 span 树（BETA、精确因果、默认关），一套是本地 transcript JSONL（day-0、默认开、人人可用）。
-
-### (A) OTel Span 树：把一次交互建成因果嵌套
-
-`sessionTracing.ts` 定义了六种 span，它们的父子关系恰好就是 `EXPLAIN` 的算子树：
-
-```
-claude_code.interaction              ← root，一次用户 prompt → 回复的完整周期
-  ├─ claude_code.llm_request         ← 每个 turn 的一次模型调用
-  ├─ claude_code.tool                ← 一次工具调用
-  │    ├─ claude_code.tool.blocked_on_user   ← 卡在"等用户批权限"的墙钟时间
-  │    └─ claude_code.tool.execution         ← 工具真正执行的时间
-  └─ claude_code.hook                ← 一次 hook 执行（仅 beta 详细追踪）
-```
-
-（span 类型定义见 `sessionTracing.ts:49`。）root 由 §16.1 那个 `startInteractionSpan(userPrompt)` 开启（`sessionTracing.ts:176`），并把用户 prompt 长度、`interaction.sequence` 记进去；结束时补上 `interaction.duration_ms`（`sessionTracing.ts:263`）。
-
-父子关系怎么建立？靠 `AsyncLocalStorage`。interaction span 存进一个 ALS，之后开 llm_request / tool span 时从 ALS 取出父 span 作为 OTel context 的 parent（`sessionTracing.ts:308`、`495`）。这样即使中间隔着若干层异步 await，子 span 也能正确挂到当前交互下。
-
-几个值得学的设计细节：
-
-- **`tool.blocked_on_user` 单独成一个 span**（`sessionTracing.ts:526`）。为什么把"等用户点批准"单独计时？因为一次 Edit 慢，可能是模型慢、可能是磁盘慢、也可能纯粹是**人去喝咖啡了**。把"等人"从"执行"里剥出来，才能在 trace 里一眼分清墙钟时间花在哪儿——这直接决定了你优化的方向是模型、是 IO、还是工作流。它结束时会记下 `decision` 和 `source`（批还是拒、谁批的），数据来自权限层（见 §16.6）。
-
-- **并行请求必须传具体 span**。一次交互里常有多个 LLM 请求并发（主线程、warmup 预热、topic 分类器、文件路径抽取器）。`endLLMRequestSpan` 的注释专门警告：不显式传入 `startLLMRequestSpan` 返回的那个 span，回填响应时就可能挂到"恰好最后一个"的 span 上、造成响应错配（`sessionTracing.ts:342`）。这是并发追踪里最经典的坑，CC 用"显式传 span 句柄"而非"隐式取最近"来根治。
-
-- **span 泄漏兜底**。正常路径靠 `endInteractionSpan` / `endToolSpan` 立即删除 span；但流被 abort、turn 中途抛异常时 span 可能永远不 end。CC 用 `WeakRef` 存活跃 span、配一个 30 分钟的后台清理 interval，把没人再引用或超时的 span 强制 flush 并回收（`sessionTracing.ts:79`、`100`）——观测设施自己不能变成内存泄漏源。
-
-每个 span 结束时都带上 `duration_ms` 和（LLM span 的）token 明细（`sessionTracing.ts:429`）。于是这棵树天然就是一份带耗时和资源消耗的 `EXPLAIN`：哪个 turn、哪次工具、哪段等待最贵，一目了然。
-
-**为什么 trace 默认关、还是 BETA？** 因为它贵且敏感。开启条件是 `telemetryEnabled && isEnhancedTelemetryEnabled()`（`instrumentation.ts:628`），后者要 `feature('ENHANCED_TELEMETRY_BETA')` 编译期开 + 运行时 env/GrowthBook 允许（`sessionTracing.ts:126`）。更详细的"beta 追踪"路径（连 system prompt、模型输出都进 span）门槛更高，还带内容脱敏（见 §16.7 / §16.8）。span 数量随工具调用线性增长、又携带较多属性，让它默认开会同时压上性能和隐私两笔账。
-
-### (B) Transcript JSONL：默认就在的那份 trace
-
-如果说 OTel span 树是"要专门开、给可观测后端看"的 trace，那么 **transcript JSONL 是 day-0 就在、每个用户本地都有、且是 `/resume` 与几乎所有社区分析工具真正读的那份 trace**。它才是绝大多数人实际能用上的"一次 prompt 的执行记录"。
-
-**路径与布局**。每个会话一个 append-only 的 JSONL 文件：
-
-```typescript
-// utils/sessionStorage.ts:199
-function getProjectsDir() { return join(getClaudeConfigHomeDir(), 'projects') }
-// utils/sessionStorage.ts:202
-export function getTranscriptPath(): string {
-  const projectDir = getSessionProjectDir() ?? getProjectDir(getOriginalCwd())
-  return join(projectDir, `${getSessionId()}.jsonl`)
-}
-```
-
-即 `~/.claude/projects/<把 cwd 转义成目录名>/<sessionId>.jsonl`。子 agent（sidechain）另写 `agent-<agentId>.jsonl`（`sessionStorage.ts:247`）——多 agent 的每条委派链各有自己的 trace 文件，与主线程分开。
-
-**它是一个 parentUuid 链表**。每写一条消息，都会盖上一套字段，其中 `parentUuid` 指向上一条：
-
-```typescript
-// utils/sessionStorage.ts:1039
-const transcriptMessage: TranscriptMessage = {
-  parentUuid: isCompactBoundary ? null : effectiveParentUuid,
-  logicalParentUuid: isCompactBoundary ? parentUuid : undefined,
-  isSidechain,
-  teamName, agentName, agentId,
-  promptId: message.type === 'user' ? (getPromptId() ?? undefined) : undefined, // ← 同 OTel prompt.id
-  ...message,           // usage / content / tool_use / …
-  sessionId, version, gitBranch, cwd, userType, entrypoint,
-}
-```
-
-（字段定义见 `types/logs.ts:221` 的 `TranscriptMessage`。）几个精妙处：
-
-- **tool_result 的父指针指向发起它的那条 assistant 消息**，而不是简单的"上一条"。代码专门处理：若消息带 `sourceToolAssistantUUID`，就用它当 `parentUuid`（`sessionStorage.ts:1031`）。于是"某个工具结果"能精确回溯到"哪个 assistant turn 里的哪次 tool_use 请求了它"——因果不是靠时间顺序猜的，是显式连边。
-- **compaction 边界断链但留逻辑链**。上下文压缩会把一段历史换成摘要；此时 `parentUuid` 置 `null`（物理断开，让 prompt cache 稳定），但 `logicalParentUuid` 保留原父指针，读取时再桥接（`sessionStorage.ts:1040`）。压缩不破坏 trace 的逻辑连续性。
-- **`promptId` 只盖在用户消息上**，正是 §16.1 那个 join key 在持久层的落点。
-
-**怎么串成"一次 prompt 的多 turn"？** 主力是 **`parentUuid` 连边**：从任意一条消息沿 `parentUuid` 回溯到根，或从某条消息向下顺着子边展开，就能拿到完整因果链——assistant turn、它发起的 tool_use、以及回来的 tool_result（tool_result 的父指针精确指向发起它的 assistant 行）层层相连。`promptId` 在这里是**定位锚点**而非分组键：它只盖在 user 行上（assistant 行没有），所以你用它**找到某次 prompt 的起点 user 行**，再沿 `parentUuid`/子边把这次 prompt 的 assistant 与 tool 因果走出来——**单靠"按 promptId 分组"收不齐所有消息**（会漏掉不带 promptId 的 assistant 行）。这就是 transcript 版的 `EXPLAIN`——而且它默认就在你硬盘上，不需要开任何遥测。
-
-**配套的只读入口**。用户不必手动解析 JSONL，CC 内置了几个观测面板：`/cost`（本次会话的 token/成本/时长汇总，见 §16.5）、`/status`、`/context`，以及 `--debug` 打开的调试日志。社区工具（如按 transcript 统计用量的 ccusage、抓 wire 的 claude-tap）也都建立在这份 JSONL 或其等价数据上。
-
-### 活例子：`/goal` 与 `/loop` 的跨 turn trace
-
-抽象讲完，用两个真实功能落地"一次任务跨多 turn 怎么被追踪"。以下来自对 2.1.201 客户端二进制的静态字符串抽取 + 明文反代抓包（**post-snapshot 逆向实锤**，非 v2.1.88 源码，独立标注）：
-
-- **`/goal`（会话级自治循环）** 自带 trace 字段。设一个目标后，transcript 里会挂一条 `goal_status` attachment，字段 `{condition, iterations, durationMs, tokens, met}`——**每个目标迭代了几轮、耗了多久、烧了多少 token、达成没**，全落进会话记录。配套遥测事件 `tengu_goal_achieved` / `tengu_goal_failed` / `tengu_goal_restored_on_resume`。这正是"一次目标跨多 turn 的执行链"的具体化：一个 prompt-based Stop hook 每轮结束后派一个独立评估器 LLM 判 yes/no，每一轮的 iteration/duration/token 都被累计进 `goal_status`。
-- **`/loop`（定时/自定节奏循环）** 靠一组 `tengu_` 事件追踪自排程的每次 tick：`tengu_loop_dynamic_wakeup_scheduled` / `_ends_turn` / `_aged_out`、`tengu_loop_keepalive_fired`、`tengu_loop_ended`，以及后台 KAIROS daemon 的 `tengu_kairos_*`。每次 loop tick 重投同一个 prompt，都在这条事件流里留下痕迹。
-
-这两个功能共同说明：**CC 的"跨多 turn 的一次任务"不是黑盒**——它要么落成 transcript 里的结构化 attachment（goal），要么落成一串带语义的 `tengu_` 事件（loop），两条路都能重建"这次自治跑了几轮、每轮什么状态"。
-
----
-
-## 16.5 成本与 token 核算：按 turn 累计
-
-`/cost` 面板背后是 `cost-tracker.ts` 的按 turn 累计。每次 API 成功，`addToTotalSessionCost` 把这次的 usage 累进 per-model 汇总，并**同时喂给两个 metric counter**：
-
-```typescript
-// cost-tracker.ts:291
-getCostCounter()?.add(cost, attrs)                                    // claude_code.cost.usage
-getTokenCounter()?.add(usage.input_tokens,  { ...attrs, type: 'input' })
-getTokenCounter()?.add(usage.output_tokens, { ...attrs, type: 'output' })
-getTokenCounter()?.add(usage.cache_read_input_tokens ?? 0,     { ...attrs, type: 'cacheRead' })
-getTokenCounter()?.add(usage.cache_creation_input_tokens ?? 0, { ...attrs, type: 'cacheCreation' })
-```
-
-`attrs` 带 `model`，fast 模式下再带 `speed:'fast'`。token 被拆成 input/output/cacheRead/cacheCreation 四类——因为四类**单价不同**，缓存读命中远比新输入便宜，分开计才能算准钱。CC 甚至递归给"advisor"子调用单独计费并发 `tengu_advisor_tool_token_usage` 事件（`cost-tracker.ts:304`），确保派生调用的成本不漏计。
-
-**跨会话接续**。成本状态会存进 project config（`saveCurrentSessionCosts`，`cost-tracker.ts:143`），`/resume` 同一会话时 `restoreCostStateForSession` 按 sessionId 匹配后恢复（`cost-tracker.ts:130`）——续跑一个会话，`/cost` 不会从零开始。进程退出时 `costHook.ts` 挂的 `useCostSummary` 打印总账并存盘（`costHook.ts:6`），`formatTotalCost` 的输出（`cost-tracker.ts:228`：Total cost / duration API+wall / code changes / usage by model）就是你在终端看到的那块摘要。
-
-这一节回答了读者 `EXPLAIN` 里的"每环节消耗哪些资源"：token 与钱不是一次性总数，而是**每次 API 调用即时累加、按模型和 token 类型分维、且能跨 resume 接续**的运行量。
-
----
-
-## 16.6 权限决策日志：可观测的"为什么放行/拦截"
-
-`EXPLAIN` 里还有一环是"每个动作是否正常、是否被拦"。CC 把每一次工具权限决策都记成可观测数据。核心是 `permissionLogging.ts` 的 `logPermissionDecision`——它是**所有 approve/reject 的单一出口**，一次决策 fan-out 到四个去处：
-
-```typescript
-// hooks/toolPermission/permissionLogging.ts:181（简化）
-function logPermissionDecision(ctx, args, permissionPromptStartTimeMs?) {
-  // ① 内部分析事件：按来源分不同事件名，做审批漏斗
-  //    tengu_tool_use_granted_in_config / _in_prompt_permanent / _by_classifier / …
-  //    tengu_tool_use_rejected_in_prompt / _denied_in_config
-  // ② 代码编辑工具计数器（Edit/Write/NotebookEdit）
-  getCodeEditToolDecisionCounter()?.add(1, { decision, source, tool_name, language })
-  // ③ 把决策存进 toolUseContext，供 trace 的 tool.blocked_on_user span 读取
-  toolUseContext.toolDecisions.set(toolUseID, { source, decision, timestamp })
-  // ④ 客户 OTel 事件
-  void logOTelEvent('tool_decision', { decision, source, tool_name })
-}
-```
-
-几个观测价值点：
-
-- **`source` 把"谁批的"结构化**：`config`（allowlist 自动放行）、`hook`、`user_permanent` / `user_temporary`（用户点了"总是/这次"）、`classifier`（分类器）、`user_reject` / `user_abort`。审计时你能区分"这次危险操作是用户手动放的、还是被规则自动放的"——这对安全复盘是决定性的。
-- **`waiting_for_user_permission_ms` 把"等人"量化**（`permissionLogging.ts:189`）：只在真正弹了 prompt 时才记，自动放行不计。它和 §16.4 的 `tool.blocked_on_user` span 是一回事的两种呈现。
-- **决策被回写进 `toolUseContext.toolDecisions`**，于是 trace 层的 `tool.blocked_on_user` span 结束时能标上准确的 `decision`/`source`（`toolExecution.ts:1171`）——三个平面在权限这一点上是打通的。
-
-关于权限模型本身（`ask`/`allow`/`deny`、分类器、hook 决策）详见[第 12 章：权限与安全](11-permission-security.md)；本章只关心"决策如何被观测"。
-
----
-
-## 16.7 一方 / 内部专用的观测设施（诚实边界）
-
-不是所有观测设施都是给外部用户的，讲清楚哪些你能用、哪些只在 Anthropic 内部或编译期就被裁掉，才不会误判。
-
-- **`ant-trace`：外部构建里是空壳**。这个命令在快照里的实现就是一行 stub：`export default { isEnabled: () => false, isHidden: true, name: 'stub' }`（`commands/ant-trace/index.js`）。它是 `feature()` 编译期 dead-code-elimination 的活标本——**外部包里物理上没有真实现，只留一个永远 disabled 的占位**。这也提醒：在公开产物里搜不到某功能的完整逻辑，不等于该功能不存在，只是被编译期裁掉了（详见方法论：抽"文字"可实锤，抽"被裁掉的逻辑"不可得）。
-
-- **Perfetto 本地追踪：Ant-only、编译期门控**。这是一份能在 Perfetto UI 里当火焰图看的本地 trace（interaction / llm_request / tool 的 span + swarm 的 agent 层级），但**不是外部用户随手可开的**：源码头注明 "Perfetto Tracing for Claude Code (Ant-only)" 且 "ant-only and eliminated from external builds"（`perfettoTracing.ts:2`、`:7`），初始化整体裹在 `feature('PERFETTO_TRACING')` 编译门控里（`perfettoTracing.ts:260`）。也就是说，`CLAUDE_CODE_PERFETTO_TRACE=1` 只在 Perfetto 特性被编译进包时才生效——外部构建里这段被 DCE 掉了，env 变量置了也没用。它和 §16.4 的 OTel span 复用同一套 start/end 埋点，但落地在本地文件、走独立的一方观测路径。
-
-- **一方 BigQuery 导出**：§16.2 讲过，受组织级 `metricsOptOut` 门控，去 Anthropic 的 BigQuery，外部用户不经手。
-
-- **FPS 自观测**：`fpsTracker.ts` / `context/fpsMetrics.tsx` 追踪终端渲染帧率（average / low-1%），会话结束时随成本一起存盘（`cost-tracker.ts:158`）。一个 TUI 把自己的渲染流畅度也纳入自观测，这是 UX 工程的细致处（渲染器细节见[第 14 章：用户体验设计](12-user-experience.md)）。
-
-- **beta 追踪的可见性矩阵**：详细追踪路径（`betaSessionTracing.ts`）能把 system prompt、模型输出、工具输入输出也写进 span，但有一张严格的可见性表——`thinking_output` 是 **ant-only**（`betaSessionTracing.ts:12` 的矩阵 + `logging.ts:746` 的 `USER_TYPE === 'ant'` 门），外部用户即使开满详细追踪也拿不到模型的思考原文。system prompt 全文只在这条 beta 路径、且每个唯一 hash 只发一次（`betaSessionTracing.ts:266`），避免重复上报大文本。
-
-> 关于 CC 反过来对**逆向者**埋的观测/防御仪器（anti-distillation 假工具注入、隐写指纹等），属于另一个话题，本项目走 clean-room 解读、不展开；参见仓库免责声明与逆向方法论笔记。
-
----
-
-## 16.8 隐私与安全边界：能观测什么 / 故意不导出什么
-
-可观测性和隐私天然拉扯：记得越多越好查，但也越危险。CC 的总原则是——**默认只导出"形状"，内容一律 opt-in**。
-
-"形状"指长度、token 数、时长、模型名、工具名、决策类型这类元数据；"内容"指 prompt 原文、模型回复、工具的输入输出、代码与文件内容。默认导出的是前者，后者要逐项显式开启：
-
-| 内容 | 开关（env） | 默认行为 | 源码/依据 |
-|---|---|---|---|
-| 用户 prompt 原文 | `OTEL_LOG_USER_PROMPTS` | `<REDACTED>`，只导出 `prompt_length` | `events.ts:17` `redactIfDisabled` |
-| 助手回复原文 | `OTEL_LOG_ASSISTANT_RESPONSES` | 脱敏，只导出长度 | 据官方文档（超快照） |
-| 工具参数/命令 | `OTEL_LOG_TOOL_DETAILS` | 省略/脱敏 | `toolExecution.ts:1135`、`metadata.ts:87` |
-| 工具输入输出内容 | `OTEL_LOG_TOOL_CONTENT` | 省略 | `sessionTracing.ts:738` |
-| 原始 API 请求/响应体 | `OTEL_LOG_RAW_API_BODIES` | 不导出 | 据官方文档（v2.1.88 快照中查无此变量） |
-| system prompt 全文 | 仅 beta 详细追踪路径 | 不进普通导出 | `betaSessionTracing.ts:266` |
-| 模型 thinking 原文 | 仅 `USER_TYPE=ant` | 外部永不导出 | `logging.ts:746` |
-
-几条设计意图值得点明：
-
-1. **代码与文件内容永不进 metrics/events**。官方明言 "Raw file contents and code snippets are not included in metrics or events."，源码侧则用 `AnalyticsMetadata_…_NOT_CODE_OR_FILEPATHS` 类型把它变成编译期约束（§16.3）。默认可观测面里，你能看到"改了 N 行 TypeScript"，但看不到改了什么。
-2. **隐私门控和基数控制是同一套旋钮的两面**。`prompt.id` 只进 events、不进 metrics；`app.version` 则由 `OTEL_METRICS_INCLUDE_VERSION` 控制、**默认在共享属性集里就关掉**（`telemetryAttributes.ts:40`，该函数同时供 metrics/events/spans 用，所以关掉是全局的，只是基数爆炸的顾虑对 metrics 最尖锐）。这些既是防基数爆炸，也是"少往聚合后台塞可归因信息"。可观测性设计里，隐私和成本经常指向同一个决定。
-3. **`OTEL_LOG_RAW_API_BODIES` 的诚实说明**：当前官方文档确有此开关（配 `api_request_body` / `api_response_body` 事件，60KB 截断、支持写文件），但它**不在 v2.1.88 快照里**——属于快照之后新增。本章据官方文档陈述，不作源码级实锤。
-4. **OTel 导出配置不向子进程传播，但 trace 上下文会**。官方明确 "Claude Code doesn't pass `OTEL_*` environment variables to the subprocesses it spawns"——Bash 工具、hook、MCP server、language server 拿不到你的 OTLP endpoint/headers/凭证，防止观测配置外泄给第三方进程。**但这不等于"什么都不传"**：据当前官方文档，追踪激活时 CC 会把 W3C trace context（`TRACEPARENT`，由 `CLAUDE_CODE_PROPAGATE_TRACEPARENT` 控制）注入 Bash/PowerShell 子进程，好让子进程的 span 挂到同一条 trace 上。传的是"这是哪条 trace"的关联信息，不是"往哪导、用什么凭证"的配置——两者要分清。（`TRACEPARENT` / `CLAUDE_CODE_PROPAGATE_TRACEPARENT` 在 v2.1.88 快照中 grep 不到，属快照之后新增，据官方文档陈述。）
+子进程这块有个容易搞反的点：默认（普通本地会话）CC 把整份环境原样透传给它 spawn 的子进程，`OTEL_*` 也在内；只有当 claude-code-action 把 `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` 置真——也就是会话被暴露给不可信内容的 CI 场景（配了 `allowed_non_write_users`）——CC 才从子进程环境里剥掉那 4 个携带 `Authorization=Bearer` 的 OTLP header 变量（`OTEL_EXPORTER_OTLP_HEADERS` 那一批），免得凭证被 shell 展开外泄给第三方；而后端地址 `OTEL_EXPORTER_OTLP_ENDPOINT` 任何情况下都不剥离。但据当前官方文档，追踪激活时它会把“这是哪条 trace”的关联信息（W3C 的 `TRACEPARENT`）注入 Bash/PowerShell 子进程，好让子进程的 span 挂到同一条 trace 上。传的是关联信息，不是导出凭证，两者别混。（这两个环境变量在快照里 grep 不到，属快照之后新增，据官方文档。）
 
 ---
 
 ## 小结
 
-Claude Code 的可观测性不是"打一堆 log"，而是一套**分平面、按用途裁剪、隐私优先**的自省系统。它能正面回答读者的 `EXPLAIN of a prompt`：一次 prompt 的多个 turn、每 turn 的 API 与工具动作、各自的耗时/token/成本、在哪等人、决策来源、是否报错——其中 events 由 `prompt.id` 归拢，trace 由 span parentage 串起，transcript 由 `parentUuid` 连边重建因果链。核心设计决策：
+Claude Code 的可观测性不是“打一堆 log”，而是一套分层、按用途裁剪、隐私优先的自省系统。它能正面回答“对一次任务做 EXPLAIN”：一次 prompt 的多个 turn、每 turn 的 API 与工具动作、各自的耗时和消耗、在哪等人、决策来自谁、有没有报错。四层各司其职——事件靠 `prompt.id` 归拢，追踪靠 span 的父子归属串起，会话记录靠 `parentUuid` 连边重建因果，指标则一概拒绝这些高基数 id 好保住自己能被聚合。
 
-| 设计决策 | 原因 |
+几条反复出现的设计取舍，值得单独记住：
+
+| 取舍 | 为什么 |
 |---|---|
-| 四层分离（Metrics / Events / Trace / Transcript） | 聚合、离散查询、因果分析、完整重放是四种问题，各需一种数据结构 |
-| `prompt.id` 关联 events、锚定 transcript user 行；trace 靠 span parentage | 离散层用 id 关联、因果层用 parentage、聚合层拒绝 id——各层用最合适的关联方式 |
-| `prompt.id` 仅 event 级；`app.version` 默认从共享属性集关掉 | 高基数维度会打爆时序库——基数纪律 |
-| metric 全用单调 Counter + delta 时序 | 对丢失/重启/乱序鲁棒，聚合只需 delta |
-| 内部 `tengu_` 与客户 OTel 双管线 | 官方产品分析与用户自有可观测互不干扰，从同一 call site 并发 |
-| `tool.blocked_on_user` 独立成 span | 把"等人"从"执行"里剥离，墙钟时间归因才准确 |
-| 并发 LLM 请求显式传 span 句柄 | 根治并行追踪的响应错配 |
-| WeakRef + 30min 兜底清理 span | 观测设施自己不能变成内存泄漏 |
-| transcript = parentUuid 链表 + tool_result 指向发起它的 assistant | 因果靠显式连边，不靠时间顺序猜 |
-| metricsOptOut 两级缓存 + 熔断 | 观测不能拖垮主流程：可廉价关闭、容忍陈旧读 |
-| 默认只导出"形状"、内容逐项 opt-in | 可观测性与隐私的张力，用"默认脱敏 + 显式开启"化解 |
-| 导出器惰性 `import()` | 重依赖挪出冷启动关键路径 |
+| 四层分开，不塞一个大日志 | 聚合、按条件查、看因果、完整重放是四类问题，各需一种数据结构 |
+| 聚合层拒绝 `prompt.id` / 默认不带版本号 | 高基数维度会打爆时序库 |
+| 指标全用计数器加 delta | 对丢失、重启、乱序都鲁棒，聚合只做差值 |
+| 内部 `tengu_` 与客户 OTel 双流并行 | 官方产品分析与你自己的可观测互不干扰，从同一处并发 |
+| 把“等你批权限”单独计时 | 墙钟耗时里“等人”和“执行”混在一起就没法归因 |
+| 并发请求显式传 span 句柄 | 根治并发追踪的响应错配 |
+| 弱引用加定时兜底清 span | 观测设施自己不能变成内存泄漏 |
+| 会话记录用父子连边、结果指向发起它的调用 | 因果靠显式连边，不靠时间顺序猜 |
+| opt-out 两级缓存加熔断 | 观测不能拖垮主流程：可廉价关、容忍陈旧读 |
+| 默认只导“形状”、内容逐项开 | 用“默认脱敏加显式开启”化解可观测与隐私的张力 |
 
-> **版本说明**：本章基于 v2.1.88 泄露源码快照做源码级走读，并与官方 [Monitoring 文档](https://code.claude.com/docs/en/monitoring-usage)交叉核对。8 个 metric 在快照与当前文档间稳定一致；events 清单在快照之后大幅扩张，凡超出快照的标识符均已标注"据官方文档"。`/goal`、`/loop` 的 trace 细节来自对 2.1.201 客户端的 post-snapshot 逆向（静态字符串 + 反代抓包），已单独标注，不与快照实锤混同。
+> 版本说明：本章基于 v2.1.88 泄露源码快照做走读，并与官方 [Monitoring 文档](https://code.claude.com/docs/en/monitoring-usage)交叉核对。8 个指标在快照与当前文档间稳定一致；事件清单快照之后大幅扩张，凡超出快照的标识符均标“据官方文档”。`/goal`、`/loop` 的追踪细节来自对 2.1.201 客户端的逆向（静态抽取加抓包），单独说明，跟快照里能直接读到的内容分开、不混为一谈。
