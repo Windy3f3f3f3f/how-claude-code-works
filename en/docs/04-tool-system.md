@@ -873,17 +873,19 @@ MCP tools are merged with built-in tools during the `assembleToolPool()` stage, 
 
 ## 4.10 Tool Search and Lazy Loading
 
-Not all 60+ tools are sent to the model with every API call. `ToolSearchTool` supports **lazy loading**:
+Not all 60+ tools enter the model's context window on every API call. `ToolSearchTool` works together with the API-side `defer_loading` flag — the `shouldDefer` field on Claude Code tool definitions serializes to the `defer_loading` marker in the request. One common misconception needs clearing up: **`defer_loading` controls what enters the context, not what you send in the request**:
 
-- Tools with `shouldDefer: true` do not appear in the initial tool list
-- The model can call `ToolSearch` to search for and dynamically load needed tools
+- **The `tools` array in every request always contains the full definitions of all tools**, including the deferred ones — the API needs them server-side to run the tool search, and to expand `tool_reference` blocks into full definitions when the model discovers a tool
+- `defer_loading: false` (default): the tool loads into context immediately
+- `defer_loading: true`: the tool loads only when the model discovers it through `ToolSearch`
 - The tool's `searchHint` field provides search hints
+- Both search variants (`regex` and `bm25`) match against tool names, descriptions, argument names, and argument descriptions
 
-This reduces the size of the system prompt and improves prompt cache hit rates.
+The benefit of lazy loading: it reduces the number of tools that enter the context (and therefore the system-prompt prefix), shrinking the tokens actually processed per turn, while keeping the prefix stable to improve prompt cache hit rates.
 
 ### The searchHint Field
 
-Each lazily loadable tool can define a `searchHint` string to increase the probability of the tool being discovered. For example, a Jupyter Notebook editing tool might set `searchHint: "notebook jupyter ipynb cell"`. When the model calls `ToolSearch`, the search algorithm matches against tool name, description, and `searchHint` simultaneously.
+Each lazily loadable tool can define a `searchHint` string to increase the probability of the tool being discovered. For example, a Jupyter Notebook editing tool might set `searchHint: "notebook jupyter ipynb cell"`. When the model calls `ToolSearch`, the search algorithm matches against tool name, description, argument names, argument descriptions, and `searchHint` simultaneously.
 
 ### ToolSearchTool Query Syntax
 
@@ -899,7 +901,33 @@ The `select:` mode is most commonly used — when the model already knows which 
 
 ### Impact on Prompt Caching
 
-The core value of lazy loading is not just reducing prompt size, but more importantly **stabilizing the cache key**. The `tools` array in the API request is part of the cache key — if the tool set sent with each request differs, the cache is invalidated. By lazy-loading infrequently used tools, the initial tool list remains unchanged across most conversation turns, thereby achieving higher prompt cache hit rates, saving token costs, and reducing latency.
+**`defer_loading` controls what enters the context window, not what you send in the request** — that is the source of its caching benefit. Since the `tools` array in every request already contains all tools (including the deferred ones), the tool set itself is not a source of cache churn; what actually participates in the prompt cache key is the **system-prompt prefix**.
+
+The API excludes deferred tools from the system-prompt prefix, in three steps:
+
+1. **At the start of the conversation**: the prefix contains only the full definitions of non-deferred tools, forming a stable cached prefix
+2. **When the model discovers a deferred tool**: the API **appends a `tool_reference` block inline** in the conversation history, and expands it into the full tool definition before passing it to the model
+3. **The prefix is never touched**: so prompt cache hits are preserved throughout — dynamically loading tools does not break the cache
+
+This means you can start a conversation with a small set of always-loaded tools (cached), let the model discover additional tools on demand, and keep the same cache hit across every turn.
+
+**Composition with strict mode**: the grammar for strict tool use builds from the **full toolset**, regardless of which tools are deferred — so `defer_loading` and strict mode compose without grammar recompilation, and both prompt cache and grammar cache are preserved when tools load dynamically.
+
+**Usage guidance** (from the official docs):
+
+- **Never** set `defer_loading: true` on the tool search tool itself — otherwise the model can't discover any other tool through search
+- Keep your **3–5 most frequently used tools non-deferred**, so the model can call them without searching first
+- Since search covers tool names, descriptions, argument names, and argument descriptions, write `searchHint` and tool descriptions to cover those dimensions
+
+> **⚠️ Compatibility warning: not all model providers support lazy loading**
+>
+> `defer_loading` and tool search are capabilities implemented **server-side by the API**, and only providers that truly implement this mechanism (e.g., the Anthropic API natively) work correctly. Many third-party gateways, local models, and compatibility proxies do not support it. In that case, using `defer_loading` can be **counterproductive**:
+>
+> - When the flag is ignored, deferred tools never enter the model's context — the model can neither see nor call them, so capability degrades directly
+> - If the client falls back to "appending a discovered tool to the `tools` array", then **every dynamic load changes the tool set sent in the request**, the cache key changes accordingly → prompt cache is invalidated frequently, and the full prefix has to be reprocessed each turn
+> - The result is not token savings, but **slower, more expensive**, and less stable behavior
+>
+> In such environments, the right approach is to keep all tools non-deferred (always loaded) so the `tools` array stays stable across the whole session and caching keeps hitting.
 
 ## 4.11 Design Insights
 
@@ -932,7 +960,7 @@ BashTool's security does not rely on any single line of defense. It has 7+ overl
 Multiple seemingly unrelated design decisions are actually driven by the same "invisible" constraint — prompt cache hit rate:
 - `assembleToolPool()`'s partitioned sorting (preventing MCP tool changes from polluting built-in tools' cache keys)
 - `backfillObservableInput()` only modifying shallow copies at the UI layer rather than API input (preventing message content modifications from invalidating the cache)
-- `ToolSearch` lazy loading (stabilizing the initial tool list, avoiding sending different tool sets with each request)
+- `ToolSearch` lazy loading (deferred tools stay out of the system-prompt prefix, keeping the prefix stable so caching keeps hitting)
 
 A cache miss means the API needs to reprocess thousands of tokens of system prompt, increasing latency and cost. This economic constraint profoundly shapes the architecture, but it's hard to notice without reading multiple components.
 

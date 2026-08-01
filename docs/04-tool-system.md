@@ -872,17 +872,19 @@ MCP 工具在 `assembleToolPool()` 阶段与内置工具合并，去重后统一
 
 ## 4.10 工具搜索与延迟加载
 
-并非所有 60+ 工具都会在每次 API 调用时发送给模型。`ToolSearchTool` 支持延迟加载：
+并非所有 60+ 工具都会在每次 API 调用时进入模型的上下文窗口（context window）。`ToolSearchTool` 与 API 侧的 `defer_loading`（延迟加载）配合工作——Claude Code 工具定义里的 `shouldDefer` 字段对应序列化到请求中的 `defer_loading` 标记。这里要澄清一个常见误解：**`defer_loading` 决定的是"什么进入上下文"，而不是"请求里发送什么"**：
 
-- `shouldDefer: true` 的工具不会在初始工具列表中出现
-- 模型可以调用 `ToolSearch` 搜索并动态加载需要的工具
+- **请求的 `tools` 数组始终包含所有工具的完整定义**，包括延迟加载的那些——API 需要它们在服务端执行工具搜索，并在模型发现工具时把 `tool_reference` 块展开成完整定义
+- `defer_loading: false`（默认）：工具立即进入模型上下文
+- `defer_loading: true`：工具只有在模型通过 `ToolSearch` 发现之后才进入上下文
 - 工具的 `searchHint` 字段提供搜索提示
+- 两种搜索变体（`regex` 与 `bm25`）都会匹配工具名称、描述、参数名和参数描述
 
-这减少了系统提示词的大小，提高了提示词缓存命中率。
+延迟加载的收益在于：减少进入上下文（从而进入系统提示词前缀）的工具数量，压缩每一轮实际处理的 token，同时让前缀保持稳定以提升 prompt cache 命中率。
 
 ### searchHint 字段
 
-每个可延迟加载的工具都可以定义 `searchHint` 字符串，用于提高工具被发现的概率。例如，一个 Jupyter Notebook 编辑工具可能设置 `searchHint: "notebook jupyter ipynb cell"`。当模型调用 `ToolSearch` 时，搜索算法同时匹配工具名称、描述和 `searchHint`。
+每个可延迟加载的工具都可以定义 `searchHint` 字符串，用于提高工具被发现的概率。例如，一个 Jupyter Notebook 编辑工具可能设置 `searchHint: "notebook jupyter ipynb cell"`。当模型调用 `ToolSearch` 时，搜索算法同时匹配工具名称、描述、参数名、参数描述以及 `searchHint`。
 
 ### ToolSearchTool 查询语法
 
@@ -898,7 +900,33 @@ ToolSearchTool 支持三种查询模式：
 
 ### 对提示词缓存的影响
 
-延迟加载的核心价值不仅是减小提示词体积，更重要的是**稳定缓存键（cache key）**。API 请求中的 `tools` 数组参与构成缓存键——每次请求发送的工具集只要不同，缓存就会失效。通过将不常用的工具延迟加载，初始工具列表在大部分对话轮次中保持不变，从而获得更高的 prompt cache 命中率，节省 Token 开销并降低延迟。
+**`defer_loading` 决定的是"什么进入上下文窗口"，而不是"请求里发送什么"**——这正是它缓存收益的来源。既然每次请求的 `tools` 数组始终包含全部工具（包括延迟的），工具集本身并不构成缓存变动因素；真正参与 prompt cache 缓存键的是**系统提示词前缀（system-prompt prefix）**。
+
+API 在服务端把延迟工具排除在系统提示词前缀之外，整个机制分三步：
+
+1. **对话开始时**：前缀只包含非延迟工具的完整定义，形成一段稳定的缓存前缀
+2. **模型发现延迟工具时**：API 在对话历史中**就地追加一个 `tool_reference` 块**，并在传给模型前把它展开为完整工具定义
+3. **前缀从未被改动**：因此 prompt cache 全程命中——动态加载工具不会破坏缓存
+
+这意味着你可以用一小撮"始终加载"的工具（保持缓存命中）开启对话，让模型按需发现更多工具，而每一轮都能维持同样的缓存命中。
+
+**与 strict mode 的配合**：严格工具调用（strict tool use）的语法约束是从**完整工具集**构建的，与哪些工具被延迟无关——所以 `defer_loading` 与 strict mode 组合使用时不需要重新编译语法（grammar），prompt cache 与 grammar cache 都能在动态加载工具时被保留。
+
+**使用建议**（来自官方文档）：
+
+- **绝不要**给工具搜索工具本身设置 `defer_loading: true`——否则模型将无法通过搜索发现任何其他工具
+- 保持 **3-5 个最常用的工具为非延迟**，让模型无需先搜索即可直接调用
+- 由于搜索覆盖工具名称、描述、参数名和参数描述，写 `searchHint` 与工具描述时应尽量覆盖这些维度
+
+> **⚠️ 兼容性警告：并非所有模型厂商都支持延迟加载**
+>
+> `defer_loading` 与工具搜索是 **API 服务端**实现的能力，只有真正实现了该机制的模型提供商（如 Anthropic API 原生支持）才能正确工作。许多第三方网关、本地模型、兼容代理并不支持它。此时使用 `defer_loading` 反而会**适得其反**：
+>
+> - 标记被忽略时，延迟工具永远不会进入模型上下文——模型看不到也调不到这些工具，能力直接降级
+> - 若客户端退化为"发现工具后把它追加进 `tools` 数组"，那么**每次动态加载都会改变请求的工具集**，缓存键随之变化 → prompt cache 频繁失效，每一轮都要重新处理完整前缀
+> - 结果不是省 Token，而是**更慢、更贵**，且稳定性更差
+>
+> 在这种环境下，正确的做法是把所有工具都保持非延迟（始终加载），让 `tools` 数组在整场会话中保持稳定，缓存才能持续命中。
 
 ## 4.11 设计洞察
 
@@ -931,7 +959,7 @@ BashTool 的安全不依赖任何单一防线。它有 7+ 层重叠的安全机�
 多个看似无关的设计决策实际上都被同一个"隐形"约束驱动——prompt cache 命中率：
 - `assembleToolPool()` 的分区排序（防止 MCP 工具变动污染内置工具的缓存键）
 - `backfillObservableInput()` 只修改 UI 层的浅拷贝而非 API 输入（防止修改消息内容导致缓存失效）
-- `ToolSearch` 延迟加载（稳定初始工具列表，避免每次请求发送不同的工具集）
+- `ToolSearch` 延迟加载（延迟工具不进入系统提示词前缀，前缀保持稳定，缓存持续命中）
 
 缓存未命中意味着 API 需要重新处理数千个 token 的系统提示词，增加延迟和成本。这个经济学约束深刻地塑造了架构，但不阅读多个组件很难察觉到。
 
@@ -993,4 +1021,4 @@ FileEditTool 的 `UI.tsx` 根据操作类型渲染不同的视觉效果：
 
 > **动手实践**：在 [claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch) 的 `src/tools.ts` 中，~325 行代码实现了 7 个核心工具。对比本章的 60+ 工具体系，这是理解"最小可用工具集"的最佳起点。参见教程 [第 2 章：工具系统](https://github.com/Windy3f3f3f3f/claude-code-from-scratch/blob/main/docs/02-tools.md)。
 
-上一章：[上下文工程](./03-context-engineering.md) | 下一章：[技能系统](./09-skills-system.md)
+上一章：[上下文工程](./03-context-engineering.md) | 下一章：[技能系统](./09-skills-system.md) 
