@@ -919,15 +919,9 @@ This means you can start a conversation with a small set of always-loaded tools 
 - Keep your **3–5 most frequently used tools non-deferred**, so the model can call them without searching first
 - Since search covers tool names, descriptions, argument names, and argument descriptions, write `searchHint` and tool descriptions to cover those dimensions
 
-> **⚠️ Compatibility warning: not all model providers support lazy loading**
+> **⚠️ Compatibility note: not all model providers support lazy loading**
 >
-> `defer_loading` and tool search are capabilities implemented **server-side by the API**, and only providers that truly implement this mechanism (e.g., the Anthropic API natively) work correctly. Many third-party gateways, local models, and compatibility proxies do not support it. In that case, using `defer_loading` can be **counterproductive**:
->
-> - When the flag is ignored, deferred tools never enter the model's context — the model can neither see nor call them, so capability degrades directly
-> - If the client falls back to "appending a discovered tool to the `tools` array", then **every dynamic load changes the tool set sent in the request**, the cache key changes accordingly → prompt cache is invalidated frequently, and the full prefix has to be reprocessed each turn
-> - The result is not token savings, but **slower, more expensive**, and less stable behavior
->
-> In such environments, the right approach is to keep all tools non-deferred (always loaded) so the `tools` array stays stable across the whole session and caching keeps hitting.
+> `defer_loading` and tool search are capabilities implemented **server-side by the API**. The Anthropic API supports them natively, but third-party gateways, local models, and other providers' compatibility layers may not implement this mechanism. If your provider does not support it, disable lazy loading (set all tools to non-deferred) to avoid unexpected side effects.
 
 ## 4.11 Design Insights
 
