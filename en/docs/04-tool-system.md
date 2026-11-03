@@ -289,14 +289,17 @@ The Pre-Tool Hook and Bash classifier **launch simultaneously**, rather than wai
 
 **Stage 4 - Permission Check**
 
-The permission check is the most complex stage in the entire pipeline, implemented in `checkPermissionsAndCallTool()` (`src/services/tools/toolExecution.ts`). It involves multiple decision sources, evaluated in a chained priority order—once any stage makes a definitive decision, subsequent checks are skipped:
+The permission check is the most complex stage in the entire pipeline, implemented in `checkPermissionsAndCallTool()` (`src/services/tools/toolExecution.ts`). It involves multiple decision sources. The following describes their responsibilities; it does not mean that any `allow` can bypass every later safety constraint:
 
-**4a. Hook Permission Override (Highest Priority)**
+**4a. Hook Permission Decision**
 
-If the Pre-Tool Hook from Stage 3 returned a permission decision (`hookPermissionResult`), it directly overrides all subsequent checks. The Hook can return three results:
-- `allow`: Skip all permission checks and execute directly (e.g., an enterprise internal Hook auto-approves specific commands)
-- `deny`: Immediately reject, with a denial reason attached
-- No decision: Falls through to the next check layer
+The Stage 3 Pre-Tool Hook can return a permission decision (`hookPermissionResult`). Do not generalize the snapshot's internal control flow into an unconditional rule that hooks override configuration. The [current official documentation](https://code.claude.com/docs/en/hooks#pretooluse-decision-control) (checked 2026-11-03) states that deny and ask rules are still evaluated regardless of an allow result:
+- `allow`: Can skip a permission prompt, subject to deny/ask rules and documented special confirmation requirements
+- `deny`: Blocks the tool call and supplies a reason
+- `ask`: Requests user confirmation
+- No decision: Continues the normal permission flow
+
+Hooks, configured rules, and the Bash classifier therefore do not form a simple unconditional override hierarchy. See the official documentation for other hook outcomes and version-specific behavior.
 
 **4b. Tool's Own `checkPermissions()`**
 
@@ -901,15 +904,15 @@ The `select:` mode is most commonly used — when the model already knows which 
 
 ### Impact on Prompt Caching
 
-**`defer_loading` controls what enters the context window, not what you send in the request** — that is the source of its caching benefit. Since the `tools` array in every request already contains all tools (including the deferred ones), the tool set itself is not a source of cache churn; what actually participates in the prompt cache key is the **system-prompt prefix**.
+**`defer_loading` controls what enters the context window, not what you send in the request** — that is the source of its caching benefit. When the full tool catalog is unchanged, discovering a deferred tool need not modify the existing prefix, allowing cached computation to be reused. This does not mean tool definitions are absent from cache keys: public caching follows `tools → system → messages`, and changing tool definitions can invalidate subsequent caches. See the [official cache-invalidation documentation](https://platform.claude.com/docs/en/build-with-claude/prompt-caching#what-invalidates-the-cache).
 
 The API excludes deferred tools from the system-prompt prefix, in three steps:
 
 1. **At the start of the conversation**: the prefix contains only the full definitions of non-deferred tools, forming a stable cached prefix
 2. **When the model discovers a deferred tool**: the API **appends a `tool_reference` block inline** in the conversation history, and expands it into the full tool definition before passing it to the model
-3. **The prefix is never touched**: so prompt cache hits are preserved throughout — dynamically loading tools does not break the cache
+3. **Discovery does not change the existing prefix**: discovery itself can preserve cached prefixes, subject to TTL, breakpoints, and other cache conditions; it does not guarantee a hit on every turn
 
-This means you can start a conversation with a small set of always-loaded tools (cached), let the model discover additional tools on demand, and keep the same cache hit across every turn.
+This means you can start a conversation with a small set of always-loaded tools (cached), let the model discover additional tools on demand, without rebuilding the existing prefix solely because another tool was discovered.
 
 **Composition with strict mode**: the grammar for strict tool use builds from the **full toolset**, regardless of which tools are deferred — so `defer_loading` and strict mode compose without grammar recompilation, and both prompt cache and grammar cache are preserved when tools load dynamically.
 

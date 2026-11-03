@@ -325,7 +325,7 @@ Fork 的优势是不污染主对话上下文、能限制工具集做安全隔离
 
 ### 实战示例
 
-代码审查（Fork + 只读工具）：
+代码审查（Fork + 审查工具）：
 
 ```markdown
 ---
@@ -339,7 +339,9 @@ context: fork
 关注点：$ARGUMENTS
 ```
 
-审查需要大量 `git diff`、`Read`、`Grep` 调用，放在主对话里会污染上下文，所以走 fork。`allowed-tools` 限制为只读——审查不应修改代码。
+审查需要读取改动和文件，因此使用 fork，让这些阅读过程在独立上下文中完成。示例中的 `allowed-tools` 可以减少审查时调用相关工具的确认步骤，但不能据此认定任务已经被限制为只读。
+
+需要特别注意这里保留的 Bash：它既能执行 `git diff` 这样的查询命令，也能执行创建、覆盖或删除文件的命令。即使没有 Edit、Write 工具，只要相应 Shell 命令获准执行，仍可能发生文件写入。当前[官方文档](https://code.claude.com/docs/en/skills#pre-approve-tools-for-a-skill)还说明，`allowed-tools` 不会移除其他工具。因此，若审查任务必须禁止修改代码，需要结合[子 Agent 的工具配置](https://code.claude.com/docs/en/sub-agents#available-tools)、权限规则和适用的沙箱限制实际执行能力；仅写“审查不应修改代码”不能替代这些限制。
 
 代码风格修复（Inline）：
 
@@ -415,10 +417,10 @@ if (loadedFrom !== 'mcp') {
 
 ### Fork 模式的安全意义
 
-Fork 不只是"在另一个线程运行"——它提供了三重隔离：
+Fork 的执行环境可以从三个方面理解：
 
-- 权限隔离：`allowedTools` 限制子 Agent 可用的工具。审查技能设置 `allowed-tools: [Bash, Read, Grep, Glob]`，即使提示词被注入恶意指令也无法写文件
-- 上下文隔离：子 Agent 看不到主对话历史，也不会向主对话泄露信息
+- 权限边界：fork 的工具池取决于子 Agent 配置，技能 `allowed-tools` 本身不是排他白名单。包含通用 Bash 的配置不能证明只读或抵御所有恶意写入；需要独立的工具池限制、权限规则和适用的沙箱约束
+- 上下文隔离：技能 fork 不自动获得主对话历史，内部调用过程也不会自动并入主对话；完成结果仍会返回，因此它不是阻止信息返回的保密边界
 - 模型隔离：可以用不同模型，如用 Sonnet 做快速检查而非 Opus
 
 ### 内置技能的安全文件提取
