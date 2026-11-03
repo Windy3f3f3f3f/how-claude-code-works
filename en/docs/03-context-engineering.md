@@ -12,7 +12,7 @@ Think of the context window as a desk: the desktop space is limited, and you mus
 
 But context engineering faces an additional challenge beyond fitting information into the window. Each API request's system prompt and tool definitions alone may total **50-100K tokens**. To avoid reprocessing all of that from scratch every time, Claude Code relies on server-side **prefix caching** (KV Cache) — the server remembers previously processed prefixes, so subsequent requests only need to process the new additions, dramatically reducing latency and cost.
 
-Prefix caching, however, comes with a brutal constraint: **the prefix must be byte-for-byte identical to hit the cache**. Not "close enough" — any single byte of change — even just toggling a request header or reordering a tool — invalidates the entire prefix cache, forcing all 50-100K tokens to be reprocessed.
+The reused prefix and relevant settings must match, but this does not mean that every HTTP header change invalidates the entire cache. The [official documentation](https://platform.claude.com/docs/en/build-with-claude/prompt-caching#what-invalidates-the-cache) distinguishes tool, system, and message levels: changes can invalidate part or all of the cache depending on their position and settings. The particular beta-header behavior below should be read as snapshot-specific analysis.
 
 This gives context engineering a feeling of **"dancing in chains"**: you can't freely reorder prompt sections, can't casually add or remove tool definitions, can't change request metadata mid-session... every design decision must simultaneously satisfy two goals — **give the model the best possible context** while **not breaking the cache**. Throughout this chapter, you'll see this tension repeatedly: many mechanisms that seem "over-engineered" are actually driven by cache stability concerns.
 
@@ -497,6 +497,8 @@ Additionally, `applyToolResultBudget` also tracks replaced tool results (`Conten
 
 #### Level 3: Microcompact
 
+> Path B below describes the snapshot-internal `cache_reference` / `cache_edits` mechanism, not a current public API request example. Public [`context_management.edits`](https://platform.claude.com/docs/en/build-with-claude/context-editing#context-editing-occurs-server-side) applies edits server-side while local history can remain intact. Public tool-result clearing invalidates affected cached prefixes and incurs cache-write costs. Server-side execution alone does not establish identical cache guarantees for these two mechanisms.
+
 Microcompact is one of the most ingenious mechanisms in Claude Code's compression system. Its goal is to **clean up old tool results that are no longer needed in the history** — if you read a file 30 minutes ago, that tool result is most likely no longer useful, but it might still be occupying thousands of tokens.
 
 Key design: Microcompact has **two completely different paths**, chosen based on cache state:
@@ -763,6 +765,8 @@ let taskBudgetRemaining: number | undefined = undefined
 
 ## 3.6 Prefix Caching Strategy
 
+> **Scope (checked 2026-11-03)**: Function names, `scope: global/org`, and latch logic below describe the analyzed snapshot, not a public Messages API configuration contract. Public caching follows `tools → system → messages`; changes may invalidate part or all of the cache. Platform organization/workspace isolation also applies: an internal `global` name does not establish cross-customer sharing of private context. See the [official caching documentation](https://platform.claude.com/docs/en/build-with-claude/prompt-caching#what-invalidates-the-cache). Cache hits reuse computation; they do not remove content from model context or enlarge its window.
+
 Earlier we said context engineering feels like "dancing in chains" — the chains are prefix caching. Now let's examine the shape of those chains in detail, and how Claude Code dances gracefully within their constraints.
 
 ### Why Does Prefix Caching Matter?
@@ -853,7 +857,7 @@ Both types of latching share a common reset point: **`/clear` and `/compact` com
 
 #### Layer 3: Tool Array and Message Array Arrangement Strategy
 
-**Tool arrangement**: The design intent is to place optional server-side tools (like advisor) **after** a tools breakpoint, so enabling or disabling `/advisor` only changes the small section after it; but as 3.6 explains, the tools breakpoint is unwired in the snapshot, so this protection never actually took effect. MCP tools use the **deferred loading** (`defer_loading`) mechanism, not appearing in the tool array until Tool Search is invoked — complementing Layer 1's splitting strategy by minimizing cache differences caused by user-specific tools.
+**Tool arrangement**: The design intent is to place optional server-side tools (like advisor) **after** a tools breakpoint, so enabling or disabling `/advisor` only changes the small section after it; but as 3.6 explains, the tools breakpoint is unwired in the snapshot, so this protection never actually took effect. MCP tools can defer entry into model context with `defer_loading`, while tool-search requests still supply their definitions. What is sent to the API differs from what enters model context. See [Chapter 4.10](./04-tool-system.md#410-tool-search-and-deferred-loading) and the [official tool-search documentation](https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool#how-it-works).
 
 **Cached Microcompact's cache awareness**: As mentioned in section 3.4, Microcompact has two paths. When the cache is "warm" (not expired), it **does not directly modify message content** (which would break the entire message prefix cache). Instead, it sends `cache_edits` instructions telling the server to "delete certain tool_result blocks from the cache." This cleans up old content and frees space without requiring the client to re-upload or the server to reprocess the entire prefix — a sophisticated coordination between message-level caching and the compression mechanism.
 
@@ -873,7 +877,7 @@ When a break is detected, the system automatically attributes it to one of three
 
 This detection system forms an **improvement feedback loop**: source code comments reveal that Layer 2's latching mechanisms were developed specifically after the detection system discovered cache breaks caused by header toggling. Detection first, discover the problem, then build the defense — a positive engineering cycle.
 
-> **Summary**: Claude Code's prefix caching is a full-pipeline solution — system and messages carry explicit cache breakpoints, with the tools array cached along with the system breakpoint, chained together into a complete cache pipeline. Four layers of defense (splitting, latching, arrangement strategy, break detection) collectively ensure this cache chain's stability. The end result: no matter how many turns the conversation has reached, each request only needs to process the latest incremental content — everything accumulated before is provided for free by the KV Cache.
+> **Summary**: Claude Code's prefix caching is a full-pipeline solution — system and messages carry explicit cache breakpoints, with the tools array cached along with the system breakpoint, chained together into a complete cache pipeline. Four layers of defense (splitting, latching, arrangement strategy, break detection) collectively ensure this cache chain's stability. When cache conditions are met, matching, unexpired prefixes can reuse computation, but cache reads and writes are still billed. Unmatched content must be processed again, and cache hits are not guaranteed on every turn. See [official pricing](https://platform.claude.com/docs/en/build-with-claude/prompt-caching#pricing).
 
 ## 3.7 `<system-reminder>` Injection Mechanism
 
@@ -1002,11 +1006,11 @@ Claude Code has a built-in five-level compression pipeline that automatically tr
 
 > Practical tip: Don't panic when you see context utilization warnings — let the system handle it automatically. Only use `/compact` manually when you explicitly want to "start a new logical thread" in the conversation.
 
-**4. Keep MCP tool installations minimal**
+**4. Keep tool definitions stable and load on demand**
 
-This is something many users don't realize: **as soon as an MCP tool actually renders into the tool array (not deferred via `defer_loading`)**, the entire system prompt cache degrades from `global` (shared worldwide) to `org` (shared within organization). This means you can't benefit from the system prompt cache shared by millions of users worldwide — every cold start requires independent computation. (MCP tools that are deferred by Tool Search do not trigger the downgrade — see 3.6.)
+Do not turn the snapshot-internal `global/org` branches into public API usage guarantees. Public caching has platform-specific organization/workspace isolation. Tool search supports a complete tool catalog while only discovered definitions enter model context; actual caching also depends on prefix stability, breakpoints, and TTL.
 
-> Practical tip: Only install MCP servers you're actively using. If an MCP server is only needed occasionally, consider removing it when done. Fewer MCP tools = better cache efficiency.
+> Practical tip: Keep tool definitions stable within a conversation and defer infrequently used tools. Do not repeatedly install and remove tools solely for caching. Check actual `cache_read_input_tokens` / `cache_creation_input_tokens` usage.
 
 ### Operations That Break the Cache
 
@@ -1035,7 +1039,7 @@ Finally, a simple mental model to summarize:
 ```
 Your request = [cached prefix] + [new content]
                 ~~~~~~~~~~~~~~   ~~~~~~~~~~~~~~
-                free (existing KV Cache)   needs computation (costs time & money)
+                billed cache reads       billed new input / cache writes
 ```
 
 Your goal is to maximize the "cached prefix" portion. The core principle: **maintain stability** — keep sessions continuous, avoid unnecessary resets, minimize operations that change the prefix. The more stable the prefix, the higher the cache hit rate, the faster the response, and the lower the cost.

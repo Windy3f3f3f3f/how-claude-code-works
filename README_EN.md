@@ -87,16 +87,17 @@ When a conversation exceeds the context window, it doesn't pop up an error dialo
 
 This is why you rarely see errors in Claude Code — not because there aren't any, but because most are handled internally.
 
-### What about long conversations? — 4-level progressive compression
+### What about long conversations? — 5-level progressive compression
 
-One of the most elegant designs in the entire system. When context approaches its limit, instead of a blunt compression pass, it goes through 4 graduated levels:
+The snapshot analyzed in Chapter 3 has five pre-request context-processing stages. Each has its own conditions and feature gates; they do not all execute on every turn:
 
-1. **Snip** — Truncate large content blocks (old tool outputs) from history
-2. **Deduplicate** — Remove duplicate content at near-zero cost
-3. **Collapse** — Fold inactive conversation segments without modifying originals (reversible)
-4. **Summarize** — Last resort: spawn a child agent to summarize the entire conversation
+1. **Tool result budget** — Persist oversized results and retain previews and references
+2. **History Snip** — Remove selected historical messages from the outgoing view
+3. **Microcompact** — Clear old tool-result bodies
+4. **Context Collapse** — Replace selected history segments with summaries while retaining originals
+5. **Autocompact** — Reuse session notes or generate a broader handoff summary
 
-Each level may free enough space that subsequent levels don't need to run. After compression, the system **automatically restores the 5 most recently edited files**, preventing the model from forgetting what it was just working on.
+Each level may free enough space that subsequent levels don't need to run. After compression, the system **automatically restores the 5 most recently read files**, preventing the model from forgetting what it was just working on.
 
 ### How do you prevent AI from executing dangerous operations? — 7 layers of defense
 
@@ -177,7 +178,7 @@ To prevent conflicts from multiple agents editing the same files, the system use
 | Source lines | 512,000+ |
 | TypeScript files | 1,884 |
 | Built-in tools | ~55 (tools.ts registry, incl. feature-gated) |
-| Compression levels | 4 |
+| Compression levels | 5 |
 | Security layers | 7 |
 
 ## Reading Recommendations

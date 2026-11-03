@@ -244,7 +244,7 @@ flowchart TD
 
     Parallel --> Hook
     Parallel --> Classifier
-    Hook --> Perm[4. 权限检查<br/>规则匹配<br/>分类器自动审批<br/>Hook覆盖<br/>交互式确认]
+    Hook --> Perm[4. 权限检查<br/>规则匹配<br/>分类器自动审批<br/>Hook决定<br/>交互式确认]
     Classifier --> Perm
 
     Perm --> Exec[5. 工具执行<br/>tool.call<br/>流式进度事件<br/>超时/沙箱]
@@ -289,14 +289,17 @@ Pre-Tool Hook 和 Bash 分类器同时启动，而不是串行等待。这两个
 
 **Stage 4 - 权限检查**
 
-权限检查是整个流水线中最复杂的阶段，实现在 `checkPermissionsAndCallTool()`（`src/services/tools/toolExecution.ts`）。它涉及多个决策源，按优先级链式求值——一旦某个环节做出明确决定，后续检查就不再执行：
+权限检查是整个流水线中最复杂的阶段，实现在 `checkPermissionsAndCallTool()`（`src/services/tools/toolExecution.ts`）。它涉及多个决策源。下面按职责介绍这些来源，不应理解为任意一个 `allow` 都能跳过所有后续安全约束：
 
-**4a. Hook 权限覆盖（最高优先级）**
+**4a. Hook 权限决定**
 
-如果 Stage 3 的 Pre-Tool Hook 返回了权限决定（`hookPermissionResult`），它直接覆盖所有后续检查。Hook 可以返回三种结果：
-- `allow`：跳过所有权限检查，直接执行（例如，企业内部 Hook 自动批准特定命令）
-- `deny`：立即拒绝，附带拒绝原因
-- 无决策：穿透到下一层检查
+Stage 3 的 Pre-Tool Hook 可以返回权限决定（`hookPermissionResult`）。但不能将快照中的内部控制流概括为“Hook 永远高于配置规则”。按[当前官方文档](https://code.claude.com/docs/en/hooks#pretooluse-decision-control)（2026-11-03 核对），deny 和 ask 规则不因 Hook 返回 allow 而停止评估：
+- `allow`：可免去权限提示，但仍受 deny/ask 规则和文档列出的特殊确认条件约束
+- `deny`：阻止工具调用，并返回原因
+- `ask`：请求用户确认
+- 无决策：继续正常权限流程
+
+因此，Hook、配置规则和 Bash 分类器不是简单的无条件覆盖关系；其他 Hook 结果及版本差异见官方文档。
 
 **4b. 工具自身的 `checkPermissions()`**
 
@@ -900,15 +903,15 @@ ToolSearchTool 支持三种查询模式：
 
 ### 对提示词缓存的影响
 
-**`defer_loading` 决定的是"什么进入上下文窗口"，而不是"请求里发送什么"**——这正是它缓存收益的来源。既然每次请求的 `tools` 数组始终包含全部工具（包括延迟的），工具集本身并不构成缓存变动因素；真正参与 prompt cache 缓存键的是**系统提示词前缀（system-prompt prefix）**。
+**`defer_loading` 决定的是"什么进入上下文窗口"，而不是"请求里发送什么"**——这正是它缓存收益的来源。在完整工具目录保持不变时，发现延迟工具不必修改原有前缀，因此可以保留已有缓存。不能进一步推导为“工具定义不参与缓存键”：公共缓存按 `tools → system → messages` 层级组织，修改工具定义仍可能使后续缓存失效。见[官方缓存失效说明](https://platform.claude.com/docs/en/build-with-claude/prompt-caching#what-invalidates-the-cache)。
 
 API 在服务端把延迟工具排除在系统提示词前缀之外，整个机制分三步：
 
 1. **对话开始时**：前缀只包含非延迟工具的完整定义，形成一段稳定的缓存前缀
 2. **模型发现延迟工具时**：API 在对话历史中**就地追加一个 `tool_reference` 块**，并在传给模型前把它展开为完整工具定义
-3. **前缀从未被改动**：因此 prompt cache 全程命中——动态加载工具不会破坏缓存
+3. **原有前缀不因发现工具而改动**：动态发现本身可保留已有缓存，但仍需满足 TTL、缓存断点和其他缓存条件，不能保证每轮命中
 
-这意味着你可以用一小撮"始终加载"的工具（保持缓存命中）开启对话，让模型按需发现更多工具，而每一轮都能维持同样的缓存命中。
+这意味着你可以用一小撮"始终加载"的工具（保持缓存命中）开启对话，让模型按需发现更多工具，而无需仅因发现工具而重建原有前缀。
 
 **与 strict mode 的配合**：严格工具调用（strict tool use）的语法约束是从**完整工具集**构建的，与哪些工具被延迟无关——所以 `defer_loading` 与 strict mode 组合使用时不需要重新编译语法（grammar），prompt cache 与 grammar cache 都能在动态加载工具时被保留。
 

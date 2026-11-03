@@ -330,7 +330,7 @@ Fork mode creates a sub-Agent via `runAgent()` with fully isolated context. Afte
 
 ### Practical Examples
 
-**Code review (Fork + read-only tools)**:
+**Code review (Fork + review tools)**:
 
 ```markdown
 ---
@@ -344,7 +344,9 @@ Review all changes on the current branch relative to main.
 Focus area: $ARGUMENTS
 ```
 
-Choosing fork because review requires many `git diff`, `Read`, `Grep` calls that would pollute the main context. `allowed-tools` restricted to read-only — review shouldn't modify code.
+Fork runs diff and file inspection in a separate context. The example's `allowed-tools` configuration can reduce approval prompts for those operations, but it does not establish that the task is read-only.
+
+Bash is important here: it can run inspection commands such as `git diff`, but also commands that create, overwrite, or delete files. Even without Edit and Write, file writes remain possible if the corresponding shell commands are permitted. The current [official documentation](https://code.claude.com/docs/en/skills#pre-approve-tools-for-a-skill) also states that `allowed-tools` does not remove other tools. If a review must not modify code, use the [subagent tool configuration](https://code.claude.com/docs/en/sub-agents#available-tools), permission rules, and applicable sandbox controls to constrain actual execution. An instruction not to modify code does not replace those controls.
 
 **Code style fix (Inline)**:
 
@@ -425,10 +427,10 @@ Note this check is **explicitly implemented** — a direct `if (loadedFrom !== '
 
 ### Fork Mode's Security Significance
 
-Fork isn't just "running in another thread" — it provides triple isolation:
+The forked execution environment has three separate aspects:
 
-- **Permission isolation**: `allowedTools` restricts which tools the sub-Agent can use. A review skill sets `allowed-tools: [Bash, Read, Grep, Glob]`; even if the prompt is injected with malicious instructions, it cannot write files
-- **Context isolation**: The sub-Agent cannot see the main conversation history, nor leak information to it
+- **Permission boundary**: The forked tool pool depends on subagent configuration; skill `allowed-tools` is not an exclusive allowlist. Unrestricted Bash access does not establish read-only behavior or immunity to malicious writes. Tool-pool restrictions, permission rules, and applicable sandbox controls are needed separately
+- **Context isolation**: A skill fork does not automatically receive the main conversation history, and its internal tool history is not automatically merged into it. Results still return to the parent, so this is not a confidentiality boundary preventing information from returning
 - **Model isolation**: Can use a different model, e.g., Sonnet for quick checks instead of Opus
 
 ### Secure File Extraction for Bundled Skills
